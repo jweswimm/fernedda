@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=fernedda
+Comment=Navigate your files through pictures
+Exec=fernedda %f
+Icon=folder-pictures
+Terminal=false
+Categories=Utility;FileManager;
+MimeType=inode/directory;
