@@ -1,0 +1,380 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fernedda</title>
+<style>
+  :root {
+    --side: 260px; --bar: 48px;
+    --bg: #f5f5f3; --panel: #ffffff; --fg: #1d1d1f; --muted: #86868b; --line: #e5e5e2;
+    --accent: #2f6fed; --hs: rgba(47,111,237,.16); --hover: #f0f0ed;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #121212; --panel: #1a1a1a; --fg: #ececec; --muted: #8a8a8e; --line: #2a2a2a;
+      --accent: #6b9bff; --hs: rgba(107,155,255,.2); --hover: #232323;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: var(--bg); color: var(--fg);
+    display: grid; grid-template-rows: var(--bar) 1fr; grid-template-columns: 1fr var(--side);
+    overflow: hidden;
+  }
+  [hidden] { display: none !important; }
+
+  header {
+    grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; padding: 0 12px;
+    background: var(--panel); border-bottom: 1px solid var(--line);
+  }
+  #crumbs { flex: 1; display: flex; align-items: center; min-width: 0; overflow: hidden; white-space: nowrap; }
+  #crumbs a { padding: 4px 6px; border-radius: 6px; color: var(--muted); cursor: pointer; text-overflow: ellipsis; overflow: hidden; }
+  #crumbs a:hover { background: var(--hover); color: var(--fg); }
+  #crumbs a:last-child { color: var(--fg); font-weight: 600; }
+  #crumbs .sep { color: var(--line); padding: 0 1px; }
+  button {
+    font: inherit; color: var(--fg); background: var(--panel); border: 1px solid var(--line);
+    border-radius: 8px; padding: 5px 12px; cursor: pointer;
+  }
+  button:hover { background: var(--hover); }
+  button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+  main { position: relative; display: grid; place-items: center; padding: 20px; min-height: 0; min-width: 0; }
+  main.drop::after {
+    content: "Drop to set picture"; position: absolute; inset: 12px; display: grid; place-items: center;
+    border: 2px dashed var(--accent); border-radius: 14px; background: var(--hs); color: var(--accent); font-weight: 600;
+  }
+  .frame { position: relative; line-height: 0; }
+  .frame img {
+    display: block; border-radius: 12px; user-select: none; -webkit-user-drag: none;
+    max-width: calc(100vw - var(--side) - 40px); max-height: calc(100vh - var(--bar) - 40px);
+    box-shadow: 0 1px 2px rgba(0,0,0,.08), 0 8px 30px rgba(0,0,0,.08);
+  }
+  #overlay { position: absolute; inset: 0; }
+  body.editing #overlay { cursor: crosshair; }
+
+  .hs { position: absolute; border-radius: 8px; cursor: pointer; transition: background .08s, box-shadow .08s; }
+  .frame:hover .hs { box-shadow: inset 0 0 0 1px rgba(255,255,255,.35); }
+  .hs:hover, body.editing .hs { background: var(--hs); box-shadow: inset 0 0 0 2px var(--accent) !important; }
+  .hs.missing { box-shadow: inset 0 0 0 2px #d9534f !important; background: rgba(217,83,79,.12); }
+  .hs.pending { background: var(--hs); box-shadow: inset 0 0 0 2px var(--accent); border: 2px dashed #fff; pointer-events: none; }
+  .label {
+    position: absolute; left: 6px; bottom: 6px; max-width: calc(100% - 12px);
+    font-size: 12px; line-height: 1; padding: 5px 7px; border-radius: 6px;
+    background: rgba(0,0,0,.72); color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    opacity: 0; transition: opacity .08s; pointer-events: none;
+  }
+  .hs:hover .label, body.editing .label { opacity: 1; }
+  .del {
+    position: absolute; top: -9px; right: -9px; width: 20px; height: 20px; padding: 0; line-height: 18px;
+    border-radius: 50%; font-size: 13px; background: #d9534f; border: 0; color: #fff;
+  }
+  .del:hover { background: #c9302c; }
+
+  #empty {
+    display: grid; place-items: center; gap: 10px; text-align: center; padding: 48px 56px;
+    border: 2px dashed var(--line); border-radius: 16px; color: var(--muted); cursor: pointer;
+  }
+  #empty:hover { border-color: var(--accent); color: var(--fg); }
+  #empty b { color: var(--fg); font-size: 15px; }
+
+  aside { background: var(--panel); border-left: 1px solid var(--line); overflow-y: auto; min-height: 0; }
+  #hint { padding: 10px 14px; font-size: 12px; color: var(--accent); background: var(--hs); border-bottom: 1px solid var(--line); }
+  #hint.ask { font-weight: 600; }
+  #list { padding: 6px; }
+  .item {
+    display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 7px; cursor: pointer;
+    white-space: nowrap; overflow: hidden; user-select: none;
+  }
+  .item:hover { background: var(--hover); }
+  .item span { overflow: hidden; text-overflow: ellipsis; flex: 1; }
+  .item svg { width: 16px; height: 16px; flex: none; color: var(--muted); }
+  .item[data-dir="1"] svg { color: var(--accent); }
+  .item.mapped::after { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex: none; }
+  body.picking .item { background: transparent; }
+  body.picking .item:hover { background: var(--hs); box-shadow: inset 0 0 0 1px var(--accent); }
+  .none { padding: 16px; color: var(--muted); text-align: center; }
+
+  #toast {
+    position: fixed; left: 50%; bottom: 20px; transform: translate(-50%, 10px); opacity: 0;
+    background: var(--fg); color: var(--bg); padding: 8px 14px; border-radius: 8px; font-size: 13px;
+    transition: opacity .15s, transform .15s; pointer-events: none;
+  }
+  #toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+  @media (max-width: 700px) {
+    :root { --side: 0px; }
+    aside { display: none; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <nav id="crumbs"></nav>
+  <button id="replace" hidden>Change picture</button>
+  <button id="edit" title="Edit regions (E)">Edit</button>
+</header>
+
+<main id="main">
+  <div class="frame" id="frame" hidden>
+    <img id="img" alt="">
+    <div id="overlay"></div>
+  </div>
+  <div id="empty" hidden>
+    <b>No picture for this folder yet</b>
+    <div>Drop an image here, or click to choose one</div>
+  </div>
+</main>
+
+<aside>
+  <div id="hint" hidden></div>
+  <div id="list"></div>
+</aside>
+
+<input type="file" id="file" accept="image/*" hidden>
+<div id="toast"></div>
+
+<script>
+const ICON_DIR = '<svg viewBox="0 0 16 16"><path d="M1.5 3a1 1 0 0 1 1-1h3.6l1.6 1.6h5.8a1 1 0 0 1 1 1V13a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1z" fill="currentColor"/></svg>';
+const ICON_FILE = '<svg viewBox="0 0 16 16"><path d="M4 1.5h5.3L12.5 4.7V14a.5.5 0 0 1-.5.5H4a.5.5 0 0 1-.5-.5V2a.5.5 0 0 1 .5-.5z M9 1.5V5h3.5" fill="none" stroke="currentColor"/></svg>';
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
+const clamp = v => Math.min(1, Math.max(0, v));
+const basename = p => p.split('/').filter(Boolean).pop() || '/';
+const box = h => `left:${h.x*100}%;top:${h.y*100}%;width:${h.w*100}%;height:${h.h*100}%`;
+const imgUrl = id => '/api/img/' + id;
+
+const S = { path: null, parent: null, entries: [], map: { image: null, hotspots: [] }, edit: false, pending: null };
+const cache = new Map();   // path -> Promise of dir data (prefetched on hover)
+let navId = 0;
+
+const join = (dir, name) => name === '..' ? S.parent : dir.replace(/\/$/, '') + '/' + name;
+const entry = name => S.entries.find(e => e.name === name);
+const isDir = name => name === '..' || !!entry(name)?.dir;
+const exists = name => name === '..' ? !!S.parent : !!entry(name);
+
+// ---------- data ----------
+async function api(url, body, type = 'application/json') {
+  const opt = body === undefined ? {} : {
+    method: 'POST', headers: { 'Content-Type': type },
+    body: type === 'application/json' ? JSON.stringify(body) : body,
+  };
+  const r = await fetch(url, opt);
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.error || r.statusText);
+  return d;
+}
+const load = p => api('/api/dir?path=' + encodeURIComponent(p));
+
+function prefetch(p) {
+  if (!p || cache.has(p)) return;
+  const pr = load(p);
+  cache.set(p, pr);
+  pr.then(d => { if (d.map.image) new Image().src = imgUrl(d.map.image); }, () => cache.delete(p));
+}
+
+async function go(path, push = true) {
+  const id = ++navId;
+  const cached = cache.get(path);
+  cache.delete(path);
+  let d;
+  try { d = await (cached || load(path)); } catch (e) { return toast(e.message); }
+  if (id !== navId) return;
+  await show(d, push, id);
+  // Prefetched data may be slightly stale: refresh quietly.
+  if (cached) load(path).then(f => {
+    if (id === navId && !S.pending && JSON.stringify(f) !== JSON.stringify(d)) show(f, false, id);
+  }, () => {});
+}
+
+async function show(d, push, id) {
+  if (d.map.image) {
+    const im = new Image();
+    im.src = imgUrl(d.map.image);
+    try { await im.decode(); } catch {}
+    if (id !== navId) return;
+  }
+  Object.assign(S, { path: d.path, parent: d.parent, entries: d.entries, map: d.map, pending: null });
+  const url = '?path=' + encodeURIComponent(d.path);
+  push ? history.pushState(null, '', url) : history.replaceState(null, '', url);
+  document.title = basename(d.path) + ' — fernedda';
+  render();
+}
+
+async function saveMap() {
+  render();
+  try { await api('/api/map', { path: S.path, hotspots: S.map.hotspots }); }
+  catch (e) { toast(e.message); }
+}
+
+async function setImage(file) {
+  if (!file || !file.type.startsWith('image/')) return toast('That isn’t an image');
+  try {
+    const d = await api('/api/image?path=' + encodeURIComponent(S.path), file, file.type);
+    S.map.image = d.image;
+    render();
+  } catch (e) { toast(e.message); }
+}
+
+async function openFile(p) {
+  try { const d = await api('/api/open', { path: p }); toast(`Opened ${basename(p)} in ${d.with}`); }
+  catch (e) { toast(e.message); }
+}
+
+function activate(name) {
+  if (S.edit && S.pending) {
+    S.map.hotspots.push({ ...S.pending, target: name });
+    S.pending = null;
+    return saveMap();
+  }
+  if (!exists(name)) return toast('Missing: ' + name);
+  const p = join(S.path, name);
+  isDir(name) ? go(p) : openFile(p);
+}
+
+// ---------- render ----------
+function render() {
+  document.body.classList.toggle('editing', S.edit);
+  document.body.classList.toggle('picking', S.edit && !!S.pending);
+  $('edit').classList.toggle('on', S.edit);
+  $('edit').textContent = S.edit ? 'Done' : 'Edit';
+  renderCrumbs(); renderStage(); renderList();
+}
+
+function renderCrumbs() {
+  let acc = '';
+  const html = ['<a data-p="/">/</a>'];
+  for (const part of S.path.split('/').filter(Boolean)) {
+    acc += '/' + part;
+    html.push(`<a data-p="${esc(acc)}">${esc(part)}</a>`);
+  }
+  $('crumbs').innerHTML = html.join('<span class="sep">/</span>').replace('<span class="sep">/</span>', '');
+}
+
+function renderStage() {
+  const has = !!S.map.image;
+  $('frame').hidden = !has;
+  $('empty').hidden = has;
+  $('replace').hidden = !(has && S.edit);
+  if (has && $('img').getAttribute('src') !== imgUrl(S.map.image)) $('img').src = imgUrl(S.map.image);
+  renderHotspots();
+}
+
+function renderHotspots() {
+  $('overlay').innerHTML = S.map.hotspots.map((h, i) => `
+    <div class="hs${exists(h.target) ? '' : ' missing'}" data-i="${i}" style="${box(h)}">
+      <span class="label">${h.target === '..' ? '↑ Parent folder' : esc(h.target)}</span>
+      ${S.edit ? '<button class="del" title="Remove region">×</button>' : ''}
+    </div>`).join('')
+    + (S.pending ? `<div class="hs pending" style="${box(S.pending)}"></div>` : '');
+}
+
+function renderList() {
+  const mapped = new Set(S.map.hotspots.map(h => h.target));
+  const row = (name, dir, label = name) =>
+    `<div class="item${mapped.has(name) ? ' mapped' : ''}" data-name="${esc(name)}" data-dir="${dir ? 1 : ''}">
+      ${dir ? ICON_DIR : ICON_FILE}<span>${esc(label)}</span></div>`;
+  const rows = [];
+  if (S.parent) rows.push(row('..', true, '↑ Parent folder'));
+  for (const e of S.entries) rows.push(row(e.name, e.dir));
+  $('list').innerHTML = rows.join('') || '<div class="none">Empty folder</div>';
+
+  const hint = $('hint');
+  hint.hidden = !S.edit;
+  hint.classList.toggle('ask', !!S.pending);
+  hint.textContent = !S.map.image ? 'Add a picture first'
+    : S.pending ? 'Now pick what this region opens ↓  (Esc to cancel)'
+    : 'Drag on the picture to draw a region';
+}
+
+// ---------- interactions ----------
+let toastTimer;
+function toast(msg) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), 1800);
+}
+
+function toggleEdit() {
+  S.edit = !S.edit;
+  S.pending = null;
+  render();
+}
+
+$('edit').onclick = toggleEdit;
+$('replace').onclick = () => $('file').click();
+$('empty').onclick = () => $('file').click();
+$('file').onchange = e => { setImage(e.target.files[0]); e.target.value = ''; };
+
+$('crumbs').onclick = e => { const a = e.target.closest('a'); if (a) go(a.dataset.p); };
+
+$('list').onclick = e => { const it = e.target.closest('.item'); if (it) activate(it.dataset.name); };
+$('list').onpointerover = e => {
+  const it = e.target.closest('.item');
+  if (it && it.dataset.dir) prefetch(join(S.path, it.dataset.name));
+};
+
+const ov = $('overlay');
+ov.onpointerover = e => {
+  const hs = e.target.closest('.hs[data-i]');
+  if (!hs) return;
+  const t = S.map.hotspots[+hs.dataset.i].target;
+  if (isDir(t) && exists(t)) prefetch(join(S.path, t));
+};
+ov.onclick = e => {
+  const hs = e.target.closest('.hs[data-i]');
+  if (!hs) return;
+  const i = +hs.dataset.i;
+  if (e.target.closest('.del')) { S.map.hotspots.splice(i, 1); return saveMap(); }
+  if (!S.edit) activate(S.map.hotspots[i].target);
+};
+
+// Draw regions in edit mode
+let drag = null;
+ov.onpointerdown = e => {
+  if (!S.edit || e.button !== 0 || e.target.closest('.hs[data-i]')) return;
+  const r = ov.getBoundingClientRect();
+  const pt = ev => ({ x: clamp((ev.clientX - r.left) / r.width), y: clamp((ev.clientY - r.top) / r.height) });
+  drag = { pt, a: pt(e) };
+  S.pending = { ...drag.a, w: 0, h: 0 };
+  renderHotspots();
+  ov.setPointerCapture(e.pointerId);
+};
+ov.onpointermove = e => {
+  if (!drag) return;
+  const a = drag.a, b = drag.pt(e);
+  S.pending = { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(a.x - b.x), h: Math.abs(a.y - b.y) };
+  ov.querySelector('.pending').style.cssText = box(S.pending);
+};
+ov.onpointerup = () => {
+  if (!drag) return;
+  drag = null;
+  if (S.pending.w < 0.01 || S.pending.h < 0.01) S.pending = null;
+  render();
+};
+
+// Drag & drop an image to set the folder's picture
+const main = $('main');
+main.ondragover = e => { if ([...e.dataTransfer.types].includes('Files')) { e.preventDefault(); main.classList.add('drop'); } };
+main.ondragleave = e => { if (!main.contains(e.relatedTarget)) main.classList.remove('drop'); };
+main.ondrop = e => { e.preventDefault(); main.classList.remove('drop'); setImage(e.dataTransfer.files[0]); };
+
+addEventListener('keydown', e => {
+  if (e.ctrlKey || e.metaKey || e.target.matches('input, textarea')) return;
+  if (e.key === 'e') toggleEdit();
+  else if (e.key === 'Escape') { if (S.pending) { S.pending = null; render(); } else if (S.edit) toggleEdit(); }
+  else if ((e.key === 'Backspace' || (e.altKey && e.key === 'ArrowUp')) && S.parent) { e.preventDefault(); go(S.parent); }
+});
+
+addEventListener('popstate', () => go(new URLSearchParams(location.search).get('path') || '~', false));
+
+go(new URLSearchParams(location.search).get('path') || '~', false);
+</script>
+</body>
+</html>
