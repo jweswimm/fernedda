@@ -13,8 +13,12 @@ find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets Concurrent)
 add_executable(fernedda
   src/main.cpp
   src/MainWindow.cpp src/MainWindow.h
+  src/LandingPage.cpp src/LandingPage.h
+  src/NewProjectDialog.cpp src/NewProjectDialog.h
+  src/ProjectView.cpp src/ProjectView.h
   src/PictureView.cpp src/PictureView.h
-  src/Store.cpp src/Store.h
+  src/Project.cpp src/Project.h
+  src/Recents.cpp src/Recents.h
   src/Opener.cpp src/Opener.h
 )
 target_link_libraries(fernedda PRIVATE Qt6::Widgets Qt6::Concurrent)

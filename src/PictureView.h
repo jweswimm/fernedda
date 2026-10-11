@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Store.h"
+#include "Project.h"
 
 #include <QImage>
 #include <QPixmap>

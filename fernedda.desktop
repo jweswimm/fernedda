@@ -6,4 +6,3 @@ Exec=fernedda %f
 Icon=folder-pictures
 Terminal=false
 Categories=Utility;FileManager;
-MimeType=inode/directory;
