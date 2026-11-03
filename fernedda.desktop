@@ -1,8 +1,8 @@
 [Desktop Entry]
 Type=Application
 Name=fernedda
-Comment=Navigate your files through pictures
-Exec=fernedda %f
-Icon=folder-pictures
+Comment=Ground control for your boat: live Signal K dashboard and boat notes
+Exec=fernedda
+Icon=utilities-system-monitor
 Terminal=false
-Categories=Utility;FileManager;
+Categories=Utility;Monitor;
