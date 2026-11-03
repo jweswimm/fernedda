@@ -157,12 +157,12 @@ Page {
                 heading: qsTr("Storage")
                 icon: "folder"
                 order: 3
-                Label { text: qsTr("Notes are Markdown files — sync or back up this folder however you like:") }
+                Label { text: qsTr("Notes are Markdown files in a folder per part of the boat, edited in Neovim:") }
                 RowLayout {
                     Layout.fillWidth: true
                     spacing: 10
-                    Text { Layout.fillWidth: true; text: Notes.folder; elide: Text.ElideMiddle; color: Theme.text; font.family: Theme.monoFamily; font.pixelSize: 13 }
-                    Chip { text: qsTr("Open folder"); icon: "folder"; compact: true; onClicked: Qt.openUrlExternally("file://" + Notes.folder) }
+                    Text { Layout.fillWidth: true; text: Notes.root; elide: Text.ElideMiddle; color: Theme.text; font.family: Theme.monoFamily; font.pixelSize: 13 }
+                    Chip { text: qsTr("Open folder"); icon: "folder"; compact: true; onClicked: Qt.openUrlExternally("file://" + Notes.root) }
                 }
             }
         }

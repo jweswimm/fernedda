@@ -2,15 +2,25 @@
 
 #include <QAbstractListModel>
 #include <QDateTime>
+#include <QFileSystemWatcher>
 #include <QStringList>
+#include <QTimer>
+#include <QVariantMap>
 #include <QtQml/qqmlregistration.h>
 
 class QQmlEngine;
 class QJSEngine;
 
-// Boat notes, one Markdown file per note with a small front-matter header,
-// stored in ~/.local/share/fernedda/notes/. Plain files on purpose: they can
-// be synced, grepped, or edited by hand.
+// Boat notes as a plain folder tree, edited in Neovim:
+//
+//   boat/<view>/<zone>/note.md            e.g. boat/below/engine/oil-change.md
+//   boat/<view>/<zone>/<spot>/note.md     a spot is just a sub-folder;
+//   boat/<view>/<zone>/<spot>/.place.json where its pin sits on the drawing
+//
+// The tree is watched, so files and folders made in oil (or anywhere) show
+// up live. Front-matter is optional (title, system, tags, pinned); a note
+// without it takes its title from the first heading or the file name and
+// its system from the zone it lives in.
 //
 // Exposed to QML as the `Notes` singleton; it is itself the (filtered,
 // sorted) list model: pinned first, then most recently updated.
@@ -20,18 +30,16 @@ class NotesModel : public QAbstractListModel {
     QML_SINGLETON
     Q_PROPERTY(QString systemFilter READ systemFilter WRITE setSystemFilter NOTIFY filterChanged)
     Q_PROPERTY(QString search READ search WRITE setSearch NOTIFY filterChanged)
-    // Where on the boat: a zone id from the boat drawing, or a spot id.
-    // A zone filter also matches notes filed under spots inside that zone.
+    // A folder relative to the root ("below/engine"); matches everything under it.
     Q_PROPERTY(QString locationFilter READ locationFilter WRITE setLocationFilter NOTIFY filterChanged)
-    // User-placed spots (named pins on the boat drawing that act as folders):
-    // [{ spotId, name, view, x, y, zone }], x/y in metres in that view.
+    // Spot folders: [{ spotId, name, view, zone, x, y, placed }], x/y in metres.
     Q_PROPERTY(QVariantList spots READ spots NOTIFY spotsChanged)
-    // Bumps on every change, so bindings that call countFor*() refresh.
-    Q_PROPERTY(int revision READ revision NOTIFY countsChanged)
     Q_PROPERTY(QStringList systems READ systems NOTIFY systemsChanged)
     Q_PROPERTY(int total READ total NOTIFY countsChanged)
     Q_PROPERTY(int count READ count NOTIFY countsChanged)
-    Q_PROPERTY(QString folder READ folder CONSTANT)
+    // Bumps on every change, so bindings that call countFor*() refresh.
+    Q_PROPERTY(int revision READ revision NOTIFY countsChanged)
+    Q_PROPERTY(QString root READ root CONSTANT)
 
 public:
     enum Role {
@@ -45,6 +53,7 @@ public:
         PreviewRole,
         BodyRole,
         LocationRole,
+        PathRole,
     };
 
     static NotesModel *create(QQmlEngine *, QJSEngine *);
@@ -60,27 +69,37 @@ public:
     QString locationFilter() const { return m_locationFilter; }
     void setLocationFilter(const QString &s);
     QVariantList spots() const;
-    int revision() const { return m_revision; }
     QStringList systems() const { return m_systems; }
     int total() const { return m_all.size(); }
     int count() const { return m_visible.size(); }
-    QString folder() const { return m_dir; }
+    int revision() const { return m_revision; }
+    QString root() const { return m_root; }
 
-    Q_INVOKABLE QString create(const QString &system = {}, const QString &location = {});
+    // Called once from QML with the boat drawing's zones:
+    // { "below/engine": "Engine", ... } — makes the folders, sets default systems.
+    Q_INVOKABLE void setZones(const QVariantMap &zoneSystems);
+
+    // New note "<location>/<slug of title>.md"; returns its id (relative path).
+    Q_INVOKABLE QString create(const QString &location, const QString &title);
     Q_INVOKABLE QVariantMap get(const QString &id) const;
-    // Accepts any of: title, body, system, tags (list or comma string), pinned.
-    Q_INVOKABLE void save(const QString &id, const QVariantMap &fields);
-    Q_INVOKABLE void remove(const QString &id);
+    Q_INVOKABLE void setPinned(const QString &id, bool pinned);
+    Q_INVOKABLE void remove(const QString &id);   // moves to boat/.trash/
     Q_INVOKABLE int countFor(const QString &system) const;
-    Q_INVOKABLE int indexOf(const QString &id) const;
-    Q_INVOKABLE QStringList allTags() const;
     Q_INVOKABLE int countForLocation(const QString &location) const;
+    Q_INVOKABLE int indexOf(const QString &id) const;
+    Q_INVOKABLE QString idAt(int row) const;
 
-    // Spots. addSpot takes { name, view, x, y, zone } and returns the new id.
+    // Spots. addSpot takes { name, zone, x, y } and returns the new folder id.
     Q_INVOKABLE QString addSpot(const QVariantMap &fields);
-    Q_INVOKABLE void updateSpot(const QString &id, const QVariantMap &fields);
-    // Notes filed under the spot move up to its zone.
+    Q_INVOKABLE void placeSpot(const QString &id, double x, double y);
+    Q_INVOKABLE QString renameSpot(const QString &id, const QString &name);
+    // Its notes and sub-folders move up to the zone.
     Q_INVOKABLE void removeSpot(const QString &id);
+
+    // Paths: relative ids ↔ absolute paths ("" when outside the boat folder).
+    Q_INVOKABLE QString absPath(const QString &rel) const;
+    Q_INVOKABLE QString relPath(const QString &abs) const;
+    Q_INVOKABLE bool isFolder(const QString &rel) const;
 
 signals:
     void filterChanged();
@@ -95,30 +114,34 @@ private:
         bool pinned = false;
         QDateTime created, updated;
     };
-
-    explicit NotesModel(QObject *parent = nullptr);
-    void load();
-    void seed();
-    bool write(const Note &n) const;
-    static bool parse(const QString &text, Note &n);
-    int find(const QString &id) const;
-    bool matches(const Note &n) const;
-    void refresh();
-    void refreshSystems();
-    bool inLocation(const Note &n, const QString &loc) const;
-    void loadSpots();
-    void saveSpots() const;
-
     struct Spot {
         QString id, name, view, zone;
         double x = 0, y = 0;
+        bool placed = false;
     };
-    QVector<Spot> m_spots;
-    int m_revision = 0;
 
-    QString m_dir;
+    explicit NotesModel(QObject *parent = nullptr);
+    void scan();
+    void scanDir(const QString &rel, int depth, QStringList &dirs, QStringList &files);
+    bool readNote(const QString &rel, Note &n) const;
+    bool inLocation(const Note &n, const QString &loc) const;
+    bool matches(const Note &n) const;
+    void refresh();
+    void refreshSystems();
+    int find(const QString &id) const;
+    QString uniquePath(const QString &dirRel, const QString &stem, const QString &ext) const;
+    static QString slug(const QString &s);
+    static QString withoutTitle(const Note &n);
+
+    QString m_root;
     QVector<Note> m_all;
-    QVector<int> m_visible; // indexes into m_all
+    QVector<int> m_visible;     // indexes into m_all
+    QStringList m_visibleIds;
+    QVector<Spot> m_spots;
+    QVariantMap m_zoneSystems;
     QString m_systemFilter, m_search, m_locationFilter;
     QStringList m_systems;
+    int m_revision = 0;
+    QFileSystemWatcher m_watcher;
+    QTimer m_rescan;
 };

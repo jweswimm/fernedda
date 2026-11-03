@@ -159,7 +159,9 @@ Item {
                 Behavior on rotation { NumberAnimation { duration: 500; easing.type: Easing.OutBack } }
             }
             HoverHandler { id: themeHover; cursorShape: Qt.PointingHandCursor }
-            TapHandler { onTapped: { themeIcon.rotation += 360; Theme.cycle() } }
+            TapHandler { onTapped: parent.hintActivate() }
+            readonly property bool hintable: true
+            function hintActivate() { themeIcon.rotation += 360; Theme.cycle() }
         }
     }
 }

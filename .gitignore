@@ -1,3 +1,5 @@
 data/
 __pycache__/
 build/
+# Boat notes live here, outside version control for now
+boat/

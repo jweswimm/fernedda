@@ -5,15 +5,16 @@ import Fernedda
 import "BoatS235C.js" as Boat
 
 // One view of the boat (outside / deck / below), scaled to fit. Parts of the
-// boat are tappable zones; user spots are pins that can be dragged.
+// boat are tappable zones (folders boat/<view>/<zone>/); spots are pins for
+// the sub-folders inside a zone, and can be dragged.
 //
-//   tap a zone or pin   → selected(location)
+//   tap a zone or pin   → selected(folder path)
 //   tap empty water     → selected("")
 //   double-tap / long-press, or tap while `placing` → name a new spot there
 Item {
     id: root
     property var view: Boat.views[0]
-    property string selection: ""       // zone or spot id
+    property string selection: ""       // folder path, e.g. "below/engine/strainer"
     property bool placing: false
     signal selected(string location)
     signal spotCreated(string spotId)
@@ -28,17 +29,39 @@ Item {
     function py(y) { return oy - y * s }
     function toBoat(p) { return [(p.x - ox) / s, (oy - p.y) / s] }
 
-    // The zone a location belongs to (a spot's zone, or the zone itself).
-    readonly property string selectedZone: {
-        if (!selection) return ""
-        if (Boat.zoneById[selection]) return selection
-        const sp = Notes.spots.find(x => x.spotId === selection)
-        return sp ? sp.zone : ""
-    }
+    // The zone and spot folders the selection is in (or "").
+    readonly property var selParts: selection ? selection.split("/") : []
+    readonly property string selectedZone: selParts.length >= 2 && Boat.zoneByPath[selParts[0] + "/" + selParts[1]] ? selParts[0] + "/" + selParts[1] : ""
+    readonly property string selectedSpot: selParts.length >= 3 ? selParts.slice(0, 3).join("/") : ""
     property string hoverZone: ""
     property string hoverSpot: ""
 
-    readonly property var spots: Notes.spots.filter(x => x.view === view.id)
+    // Spots in this view. One without a saved place sits beside its zone's
+    // label until you drag it somewhere.
+    readonly property var spots: {
+        const out = []
+        let unplaced = 0
+        for (const sp of Notes.spots) {
+            if (sp.view !== view.id) continue
+            const z = Boat.zoneByPath[sp.zone]
+            if (sp.placed) out.push(sp)
+            else if (z) {
+                const k = unplaced++
+                out.push(Object.assign({}, sp, { x: z.at[0] + (28 + 30 * (k % 4)) / s, y: z.at[1] - (14 + 34 * Math.floor(k / 4)) / s }))
+            }
+        }
+        return out
+    }
+
+    // Things hint mode can label: every zone and spot in this view.
+    function hintTargets() {
+        const out = []
+        for (const z of view.zones)
+            out.push({ item: root, x: px(z.at[0]), y: py(z.at[1]), activate: () => root.selected(z.path) })
+        for (const sp of spots)
+            out.push({ item: root, x: px(sp.x), y: py(sp.y) - 14, activate: () => root.selected(sp.spotId) })
+        return out
+    }
 
     function spotAt(p) {
         let best = "", bd = 18
@@ -51,7 +74,7 @@ Item {
     function zoneAt(p) {
         const m = toBoat(p)
         const z = Boat.hit(view, m[0], m[1])
-        return z ? z.id : ""
+        return z ? z.path : ""
     }
 
     function startPlacing(p) {
@@ -119,8 +142,8 @@ Item {
             Shape {
                 id: zoneShape
                 required property var modelData
-                readonly property bool sel: root.selectedZone === modelData.id
-                readonly property bool hot: root.hoverZone === modelData.id
+                readonly property bool sel: root.selectedZone === modelData.path
+                readonly property bool hot: root.hoverZone === modelData.path
                 anchors.fill: parent
                 preferredRendererType: Shape.CurveRenderer
                 ShapePath {
@@ -153,8 +176,8 @@ Item {
             model: root.view.zones
             Rectangle {
                 required property var modelData
-                readonly property int n: (Notes.revision, Notes.countForLocation(modelData.id))
-                readonly property bool show: n > 0 && root.hoverZone !== modelData.id && root.selectedZone !== modelData.id
+                readonly property int n: (Notes.revision, Notes.countForLocation(modelData.path))
+                readonly property bool show: n > 0 && root.hoverZone !== modelData.path && root.selectedZone !== modelData.path
                 x: root.px(modelData.at[0]) - width / 2
                 y: root.py(modelData.at[1]) - height / 2
                 width: Math.max(20, countText.implicitWidth + 10)
@@ -180,7 +203,7 @@ Item {
         // Label on the hovered / selected zone.
         Rectangle {
             id: zoneLabel
-            readonly property var zone: Boat.zoneById[root.hoverZone || root.selection]  // a selected spot labels itself
+            readonly property var zone: Boat.zoneByPath[root.hoverZone || (root.selectedSpot ? "" : root.selectedZone)]  // a selected spot labels itself
             readonly property bool show: !!zone && zone.view === root.view.id && !root.hoverSpot
             visible: opacity > 0
             opacity: show ? 1 : 0
@@ -206,7 +229,7 @@ Item {
                     font.weight: Font.DemiBold
                 }
                 Text {
-                    readonly property int n: zoneLabel.zone ? (Notes.revision, Notes.countForLocation(zoneLabel.zone.id)) : 0
+                    readonly property int n: zoneLabel.zone ? (Notes.revision, Notes.countForLocation(zoneLabel.zone.path)) : 0
                     visible: n > 0
                     text: n
                     color: Theme.accent
@@ -223,7 +246,7 @@ Item {
             Item {
                 id: pin
                 required property var modelData
-                readonly property bool sel: root.selection === modelData.spotId
+                readonly property bool sel: root.selectedSpot === modelData.spotId
                 readonly property bool hot: root.hoverSpot === modelData.spotId || drag.active
                 readonly property int n: (Notes.revision, Notes.countForLocation(modelData.spotId))
                 x: root.px(modelData.x) - 13
@@ -236,8 +259,9 @@ Item {
                     anchors.centerIn: parent
                     width: 26; height: 26; radius: 13
                     color: pin.sel ? Theme.accent : Theme.surfaceHi
-                    border.color: Theme.accent
+                    border.color: pin.modelData.placed ? Theme.accent : Theme.warn
                     border.width: 1.5
+                    opacity: pin.modelData.placed || pin.sel || pin.hot ? 1 : 0.75
                     scale: pin.hot ? 1.18 : 1
                     Behavior on scale { NumberAnimation { duration: Theme.fast; easing.type: Easing.OutBack } }
                     Behavior on color { ColorAnimation { duration: Theme.fast } }
@@ -253,7 +277,7 @@ Item {
                 Text {
                     anchors.horizontalCenter: parent.horizontalCenter
                     y: 28
-                    text: pin.modelData.name
+                    text: pin.modelData.name + (pin.modelData.placed ? "" : qsTr(" · drag to place"))
                     color: pin.sel || pin.hot ? Theme.text : Theme.textDim
                     style: Text.Outline
                     styleColor: Theme.bg
@@ -267,8 +291,7 @@ Item {
                     cursorShape: Qt.ClosedHandCursor
                     onActiveChanged: if (!active) {
                         const m = root.toBoat(Qt.point(pin.x + 13, pin.y + 13))
-                        const z = Boat.hit(root.view, m[0], m[1])
-                        Notes.updateSpot(pin.modelData.spotId, { x: m[0], y: m[1], zone: z ? z.id : pin.modelData.zone })
+                        Notes.placeSpot(pin.modelData.spotId, m[0], m[1])
                     }
                 }
             }
@@ -316,21 +339,24 @@ Item {
             NumberAnimation { property: "scale"; from: 0.94; to: 1; duration: 200; easing.type: Easing.OutBack }
         }
         function commit() {
-            if (!nameField.text.trim()) return
-            const id = Notes.addSpot({ name: nameField.text, view: root.view.id, x: boatPt[0], y: boatPt[1], zone: zone ? zone.id : "" })
+            if (!nameField.text.trim() || !zone) return
+            const id = Notes.addSpot({ name: nameField.text, zone: zone.path, x: boatPt[0], y: boatPt[1] })
             close()
             root.spotCreated(id)
         }
         contentItem: Column {
             spacing: 8
             Text {
-                text: namer.zone ? qsTr("New spot in %1").arg(namer.zone.name) : qsTr("New spot")
+                text: namer.zone ? qsTr("New spot (folder) in %1").arg(namer.zone.name) : qsTr("Spots go inside a part of the boat — tap one")
+                wrapMode: Text.WordWrap
+                width: parent.width
                 color: Theme.textDim
                 font.family: Theme.fontFamily
                 font.pixelSize: 12
             }
             TextField {
                 id: nameField
+                visible: !!namer.zone
                 width: parent.width
                 placeholderText: qsTr("e.g. Raw water strainer")
                 placeholderTextColor: Theme.textFaint
@@ -344,7 +370,7 @@ Item {
                 spacing: 6
                 anchors.right: parent.right
                 Chip { text: qsTr("Cancel"); compact: true; onClicked: namer.close() }
-                Chip { text: qsTr("Add spot"); icon: "pin"; compact: true; checked: true; onClicked: namer.commit() }
+                Chip { visible: !!namer.zone; text: qsTr("Add spot"); icon: "pin"; compact: true; checked: true; onClicked: namer.commit() }
             }
         }
     }

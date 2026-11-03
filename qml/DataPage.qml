@@ -179,7 +179,10 @@ Page {
                     }
                 }
                 HoverHandler { id: rowHover; cursorShape: row.numeric ? Qt.PointingHandCursor : Qt.ArrowCursor }
+                readonly property bool hintable: row.numeric
+                function hintActivate() { tapRow.tapped(null, Qt.LeftButton) }
                 TapHandler {
+                    id: tapRow
                     enabled: row.numeric
                     onTapped: page.openDetail(row, {
                         title: row.path.split(".").slice(-2).join(" › "), icon: "data", color: Theme.accent2,

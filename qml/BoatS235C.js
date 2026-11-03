@@ -387,9 +387,16 @@ var views = [outside, deck, below]
 
 // ---- lookups -------------------------------------------------------------
 
+// Every zone is a folder: boat/<view>/<zone>/ — `path` is that relative path.
 var zoneById = {}
+var zoneByPath = {}
 for (const v of views)
-    for (const z of v.zones) { z.view = v.id; zoneById[z.id] = z }
+    for (const z of v.zones) { z.view = v.id; z.path = v.id + "/" + z.id; zoneById[z.id] = z; zoneByPath[z.path] = z }
+
+function viewById(id) {
+    for (const v of views) if (v.id === id) return v
+    return null
+}
 
 function viewLabel(id) {
     for (const v of views) if (v.id === id) return v.label

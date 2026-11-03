@@ -5,79 +5,47 @@ import QtCore
 import Fernedda
 import "BoatS235C.js" as Boat
 
-// Notes, organised two ways:
-//   Boat    — list | boat drawing. Tap a part of the boat to see and file
-//             notes there; opening a note swaps the drawing for the editor.
-//   Systems — systems | list | editor.
-// Edits save automatically shortly after you stop typing.
+// Notes live in the boat folder (boat/<view>/<zone>/[spot]/*.md) and are
+// edited in Neovim, in a terminal beside the app. Two ways to browse:
+//   Boat    — list | boat drawing. Tap a part of the boat to see its notes;
+//             picking a note swaps the drawing for a preview.
+//   Systems — systems | list | preview.
+// The app and Neovim follow each other: moving in oil focuses that part of the
+// boat here, and choosing something here moves oil's cursor to it.
 Page {
     id: page
     title: qsTr("Notes")
 
-    property string currentId: ""
+    property string currentId: ""        // note id = path relative to the boat folder
     property string mode: "boat"          // "boat" | "systems"
     property string boatView: "outside"
-    property string location: ""          // remembered boat selection
-    property bool boatShown: true         // boat mode: drawing (true) or editor
-    // Reopen the note you were on last time.
+    property string location: ""          // folder path, e.g. "below/engine"
+    property bool boatShown: true         // boat mode: drawing (true) or preview
     Settings {
         category: "notes"
-        property alias current: page.currentId
+        property alias note: page.currentId
         property alias mode: page.mode
         property alias boatView: page.boatView
-        property alias boatLocation: page.location
-    }
-    Component.onCompleted: {
-        if (currentId && !Notes.get(currentId).noteId) currentId = ""
-        if (location && !locInfo(location)) location = ""
-        applyMode()
-        boatShown = true
-        Qt.callLater(editor.load)
+        property alias folder: page.location
     }
     readonly property bool compact: width < 1000
     readonly property bool boatMode: mode === "boat"
     readonly property bool boatVisible: boatMode && boatShown
+    readonly property var current: (Notes.revision, currentId ? Notes.get(currentId) : ({}))
 
-    function applyMode() {
-        if (boatMode) { Notes.systemFilter = ""; Notes.locationFilter = location }
-        else Notes.locationFilter = ""
-    }
-    onModeChanged: applyMode()
-    function setLocation(loc) { location = loc; Notes.locationFilter = loc }
-
-    // Location = boat zone id or spot id. Returns { name, zone, view, system, spot } or null.
-    function locInfo(loc) {
-        if (!loc) return null
-        const z = Boat.zoneById[loc]
-        if (z) return { name: z.name, zone: z.id, view: z.view, system: z.system, spot: false }
-        const sp = Notes.spots.find(x => x.spotId === loc)
-        if (!sp) return null
-        const sz = Boat.zoneById[sp.zone]
-        return { name: sp.name, zone: sp.zone, view: sp.view, system: sz ? sz.system : "", spot: true }
-    }
-    function locLabel(loc) { const i = locInfo(loc); return i ? i.name : "" }
-    // Jump to a location on the drawing.
-    function showOnBoat(loc) {
-        editor.flush()
-        mode = "boat"
-        const i = locInfo(loc)
-        if (i) boatView = i.view
-        setLocation(loc)
+    Component.onCompleted: {
+        const zones = {}
+        for (const v of Boat.views)
+            for (const z of v.zones) zones[z.path] = z.system
+        Notes.setZones(zones)
+        if (currentId && !Notes.get(currentId).noteId) currentId = ""
+        if (location && !Notes.isFolder(location)) location = ""
+        applyMode()
         boatShown = true
     }
-    // Choices for the editor's location picker.
-    readonly property var locationChoices: {
-        const out = [{ text: qsTr("Not on the boat"), value: "", icon: "note" }]
-        for (const v of Boat.views)
-            for (const z of v.zones) {
-                out.push({ text: v.label + " · " + z.name, value: z.id, icon: "boat" })
-                for (const sp of Notes.spots)
-                    if (sp.zone === z.id) out.push({ text: "      " + sp.name, value: sp.spotId, icon: "pin" })
-            }
-        for (const sp of Notes.spots)
-            if (!Boat.zoneById[sp.zone]) out.push({ text: Boat.viewLabel(sp.view) + " · " + sp.name, value: sp.spotId, icon: "pin" })
-        return out
-    }
+    // The first time Notes opens, bring up Neovim beside the app.
+    property bool launched: false
+    onActiveChanged: if (active && !launched) { launched = true; if (!Nvim.running) Nvim.launch(Notes.root) }
 
     function sysIcon(s) {
         return ({ "": "list", Engine: "engine", Electrical: "bolt", Rigging: "rigging", Sails: "sail",
@@ -85,19 +53,124 @@ Page {
                   Interior: "home", General: "note" })[s] || "tag"
     }
 
-    function newNote() {
-        const loc = boatMode ? Notes.locationFilter : ""
-        const info = locInfo(loc)
-        const id = Notes.create(boatMode ? (info ? info.system : "") : Notes.systemFilter, loc)
-        Notes.search = ""
-        select(id)
-        editor.focusTitle()
+    // ---- locations -----------------------------------------------------------
+
+    function applyMode() {
+        if (boatMode) { Notes.systemFilter = ""; Notes.locationFilter = location }
+        else Notes.locationFilter = ""
     }
-    function select(id) {
-        if (boatMode) boatShown = false
-        if (id === currentId) return
-        editor.flush()
+    onModeChanged: applyMode()
+
+    function pretty(s) { return s.replace(/[-_]+/g, " ") }
+    // { name, crumbs, view, zone, spot, depth, system } for a folder path, or null.
+    function locInfo(loc) {
+        if (!loc) return null
+        const parts = loc.split("/")
+        const v = Boat.viewById(parts[0])
+        const z = parts.length >= 2 ? Boat.zoneByPath[parts[0] + "/" + parts[1]] : null
+        const crumbs = [v ? v.label : pretty(parts[0])]
+        if (parts.length >= 2) crumbs.push(z ? z.name : pretty(parts[1]))
+        for (let i = 2; i < parts.length; ++i) crumbs.push(pretty(parts[i]))
+        return { name: crumbs[crumbs.length - 1], crumbs: crumbs, view: v ? v.id : "", zone: z ? z.path : "",
+                 spot: parts.length === 3, depth: parts.length, system: z ? z.system : "" }
+    }
+    function locLabel(loc) { const i = locInfo(loc); return i ? i.name : "" }
+
+    // Go to a folder. `fromNvim` is set when oil asked for it, so we don't echo back.
+    function setLocation(loc, fromNvim) {
+        location = loc
+        Notes.locationFilter = boatMode ? loc : ""
+        const i = locInfo(loc)
+        if (i && i.view) boatView = i.view
+        if (!fromNvim && Nvim.running) Nvim.reveal(Notes.absPath(loc))
+    }
+    function showOnBoat(loc) {
+        mode = "boat"
+        setLocation(loc)
+        boatShown = true
+    }
+    function up() {
+        if (boatMode && !boatShown) { boatShown = true; return }
+        if (!location) return
+        setLocation(location.includes("/") ? location.slice(0, location.lastIndexOf("/")) : "")
+    }
+
+    // Oil moved (or a file was opened) in Neovim.
+    Connections {
+        target: Nvim
+        function onFocused(absPath) {
+            const rel = Notes.relPath(absPath)
+            if (rel === "") return                       // outside the boat folder
+            if (rel === "." ) { page.setLocation("", true); page.boatShown = true; return }
+            if (Notes.isFolder(rel)) {
+                page.mode = "boat"
+                page.setLocation(rel, true)
+                page.boatShown = true
+            } else if (Notes.get(rel).noteId) {
+                page.mode = "boat"
+                page.setLocation(rel.includes("/") ? rel.slice(0, rel.lastIndexOf("/")) : "", true)
+                page.currentId = rel
+                page.boatShown = false
+            }
+        }
+    }
+
+    // ---- notes ---------------------------------------------------------------
+
+    function select(id, fromKeys) {
         currentId = id
+        if (boatMode) boatShown = false
+        const row = Notes.indexOf(id)
+        if (row >= 0) noteList.positionViewAtIndex(row, ListView.Contain)
+        if (Nvim.running && id) Nvim.reveal(Notes.absPath(id))
+    }
+    function move(delta) {
+        if (Notes.count === 0) return
+        const row = Notes.indexOf(currentId)
+        const next = row < 0 ? (delta > 0 ? 0 : Notes.count - 1) : Math.max(0, Math.min(Notes.count - 1, row + delta))
+        select(Notes.idAt(next))
+    }
+    function first() { if (Notes.count) select(Notes.idAt(0)) }
+    function last() { if (Notes.count) select(Notes.idAt(Notes.count - 1)) }
+    function editCurrent() {
+        if (!currentId) return
+        if (!Nvim.running) Nvim.launch(Notes.root)
+        Nvim.edit(Notes.absPath(currentId))          // waits for a just-launched nvim
+    }
+    function togglePin() { if (currentId) Notes.setPinned(currentId, !current.pinned) }
+    function deleteCurrent() {
+        if (!currentId) return
+        if (!preview.confirmDelete) { preview.confirmDelete = true; confirmTimer.restart(); return }
+        const id = currentId
+        const row = Notes.indexOf(id)
+        currentId = ""
+        Notes.remove(id)
+        preview.confirmDelete = false
+        if (Notes.count) select(Notes.idAt(Math.min(row, Notes.count - 1)))
+        else if (boatMode) boatShown = true
+    }
+    Timer { id: confirmTimer; interval: 3000; onTriggered: preview.confirmDelete = false }
+    function newNote() { newPrompt.open() }
+    function insertReadings() {
+        if (!Nvim.running) return
+        Nvim.insert(readingsMarkdown())
+        Nvim.focusTerminal()
+    }
+    function terminal() { Nvim.running ? Nvim.focusTerminal() : Nvim.launch(Notes.root) }
+
+    // Boat views and zones from the keyboard.
+    function setView(i) { if (i >= 0 && i < Boat.views.length) { mode = "boat"; boatShown = true; boatView = Boat.views[i].id } }
+    function cycleView(d) {
+        const i = Boat.views.findIndex(v => v.id === boatView)
+        setView((i + d + Boat.views.length) % Boat.views.length)
+    }
+    function cycleZone(d) {
+        mode = "boat"; boatShown = true
+        const v = Boat.viewById(boatView)
+        const cur = locInfo(location)
+        let i = v.zones.findIndex(z => cur && z.path === cur.zone)
+        i = i < 0 ? (d > 0 ? 0 : v.zones.length - 1) : (i + d + v.zones.length) % v.zones.length
+        setLocation(v.zones[i].path)
     }
 
     // Live values for "Insert readings"
@@ -121,10 +194,55 @@ Page {
         return "\n> **Readings · " + when + "**  \n> " + (parts.length ? parts.join(" · ") : qsTr("no data")) + "\n"
     }
 
-    // Styled combo box used for the system picker.
+    // ---- keys ----------------------------------------------------------------
+    // Normal-mode keys while this page is showing; Main.qml routes them here.
+    readonly property var keymap: [
+        ["j / k", qsTr("next / previous note")], ["gg / G", qsTr("first / last note")],
+        ["Enter / e", qsTr("edit note in Neovim")], ["o", qsTr("new note here")],
+        ["- / h", qsTr("up a folder (back to the boat)")], ["J / K", qsTr("next / previous part of the boat")],
+        ["1 2 3", qsTr("Outside / Deck / Below")], ["gt / gT", qsTr("next / previous view")],
+        ["s", qsTr("Boat ↔ Systems")], ["/", qsTr("search")], ["p", qsTr("pin")], ["dd", qsTr("delete note")],
+        ["a", qsTr("add a spot (then f / click to place)")], ["i", qsTr("insert readings into the note")],
+        ["t", qsTr("open / focus Neovim")]
+    ]
+    function handleKey(seq) {
+        switch (seq) {
+        case "j": move(1); return true
+        case "k": move(-1); return true
+        case "gg": first(); return true
+        case "G": last(); return true
+        case "Enter": case "e": editCurrent(); return true
+        case "o": newNote(); return true
+        case "-": case "h": case "Backspace": up(); return true
+        case "J": cycleZone(1); return true
+        case "K": cycleZone(-1); return true
+        case "1": setView(0); return true
+        case "2": setView(1); return true
+        case "3": setView(2); return true
+        case "gt": cycleView(1); return true
+        case "gT": cycleView(-1); return true
+        case "s": mode = boatMode ? "systems" : "boat"; return true
+        case "/": searchField.forceActiveFocus(); return true
+        case "p": togglePin(); return true
+        case "dd": deleteCurrent(); return true
+        case "a": mode = "boat"; boatShown = true; boatCanvas.placing = true; return true
+        case "i": insertReadings(); return true
+        case "t": terminal(); return true
+        case "Escape":
+            if (boatCanvas.placing) { boatCanvas.placing = false; return true }
+            if (boatMode && !boatShown) { boatShown = true; return true }
+            return false
+        }
+        return false
+    }
+    // Keys that start a longer sequence here.
+    readonly property var prefixes: ["g", "d"]
+
+    // ---- pieces --------------------------------------------------------------
+
+    // Styled combo box used for the system picker (compact layout).
     component SysCombo: ComboBox {
         id: combo
-        property var iconFor: page.sysIcon
         implicitHeight: 32
         font.family: Theme.fontFamily
         font.pixelSize: 13
@@ -136,7 +254,7 @@ Page {
         contentItem: RowLayout {
             spacing: 6
             Item { width: 6 }
-            Icon { name: combo.iconFor(combo.currentValue || ""); size: 14; color: Theme.accent }
+            Icon { name: page.sysIcon(combo.currentValue || ""); size: 14; color: Theme.accent }
             Text {
                 Layout.fillWidth: true
                 text: combo.displayText
@@ -156,14 +274,9 @@ Page {
             required property int index
             width: ListView.view.width
             highlighted: combo.highlightedIndex === index
-            contentItem: RowLayout {
-                spacing: 8
-                Icon { name: combo.iconFor(d.modelData.value !== undefined ? d.modelData.value : d.modelData); size: 14; color: Theme.textDim }
-                Text {
-                    Layout.fillWidth: true
-                    text: d.modelData.text !== undefined ? d.modelData.text : d.modelData
-                    color: Theme.text; font.family: Theme.fontFamily; font.pixelSize: 13
-                }
+            contentItem: Text {
+                text: d.modelData.text !== undefined ? d.modelData.text : d.modelData
+                color: Theme.text; font.family: Theme.fontFamily; font.pixelSize: 13
             }
             background: Rectangle { color: d.highlighted ? Theme.alpha(Theme.accent, 0.15) : "transparent"; radius: 8 }
         }
@@ -177,12 +290,54 @@ Page {
                 implicitHeight: contentHeight
                 model: combo.popup.visible ? combo.delegateModel : null
                 currentIndex: combo.highlightedIndex
-                ScrollIndicator.vertical: ScrollIndicator {}
             }
             background: Rectangle { color: Theme.surfaceHi; radius: 12; border.color: Theme.border }
-            enter: Transition {
-                NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 140 }
-                NumberAnimation { property: "scale"; from: 0.96; to: 1; duration: 180; easing.type: Easing.OutCubic }
+        }
+    }
+
+    // New note: ask for a title, create the file, open it in Neovim.
+    Popup {
+        id: newPrompt
+        parent: Overlay.overlay
+        x: (parent.width - width) / 2
+        y: parent.height * 0.25
+        width: Math.min(440, parent.width - 40)
+        padding: 18
+        modal: true
+        focus: true
+        onOpened: { titleField.text = ""; titleField.forceActiveFocus() }
+        background: Rectangle { color: Theme.surfaceHi; radius: 14; border.color: Theme.alpha(Theme.accent, 0.6) }
+        Overlay.modal: Rectangle { color: Theme.alpha(Theme.bg, 0.55) }
+        function commit() {
+            const loc = page.boatMode ? page.location : ""
+            const id = Notes.create(loc, titleField.text)
+            close()
+            if (!id) return
+            page.select(id)
+            page.editCurrent()
+        }
+        contentItem: Column {
+            spacing: 10
+            Text {
+                text: page.boatMode && page.location ? qsTr("New note in %1").arg(page.locInfo(page.location).crumbs.join(" › "))
+                                                     : qsTr("New note (top of the boat folder)")
+                color: Theme.textDim; font.family: Theme.fontFamily; font.pixelSize: 13
+                width: parent.width; elide: Text.ElideRight
+            }
+            TextField {
+                id: titleField
+                width: parent.width
+                placeholderText: qsTr("Title, e.g. Impeller change")
+                placeholderTextColor: Theme.textFaint
+                color: Theme.text
+                font.family: Theme.fontFamily
+                font.pixelSize: 16
+                background: Rectangle { radius: 8; color: Theme.surface; border.color: titleField.activeFocus ? Theme.accent : Theme.border }
+                onAccepted: newPrompt.commit()
+            }
+            Text {
+                text: qsTr("Enter creates it and opens it in Neovim · Esc cancels")
+                color: Theme.textFaint; font.family: Theme.fontFamily; font.pixelSize: 11
             }
         }
     }
@@ -234,7 +389,9 @@ Page {
                     required property var modelData
                     required property int index
                     readonly property bool current: ListView.isCurrentItem
-                    readonly property int n: (Notes.total, Notes.countFor(modelData))
+                    readonly property int n: (Notes.revision, Notes.countFor(modelData))
+                    readonly property bool hintable: true
+                    function hintActivate() { Notes.systemFilter = modelData }
                     width: systemList.width
                     height: 38
                     Rectangle {
@@ -265,7 +422,7 @@ Page {
                         }
                     }
                     HoverHandler { id: sysHover; cursorShape: Qt.PointingHandCursor }
-                    TapHandler { onTapped: Notes.systemFilter = sysRow.modelData }
+                    TapHandler { onTapped: sysRow.hintActivate() }
                 }
             }
         }
@@ -300,25 +457,28 @@ Page {
                     Repeater {
                         model: [{ id: "boat", icon: "boat", label: qsTr("Boat") }, { id: "systems", icon: "list", label: qsTr("Systems") }]
                         Item {
+                            id: modeItem
                             required property var modelData
                             readonly property bool on: page.mode === modelData.id
+                            readonly property bool hintable: true
+                            function hintActivate() { page.mode = modelData.id; page.boatShown = true }
                             width: parent.width / 2
                             height: parent.height
                             Row {
                                 anchors.centerIn: parent
                                 spacing: 7
-                                Icon { name: parent.parent.modelData.icon; size: 15; color: parent.parent.on ? Theme.accent : Theme.textDim; anchors.verticalCenter: parent.verticalCenter }
+                                Icon { name: modeItem.modelData.icon; size: 15; color: modeItem.on ? Theme.accent : Theme.textDim; anchors.verticalCenter: parent.verticalCenter }
                                 Text {
-                                    text: parent.parent.modelData.label
-                                    color: parent.parent.on ? Theme.text : Theme.textDim
+                                    text: modeItem.modelData.label
+                                    color: modeItem.on ? Theme.text : Theme.textDim
                                     font.family: Theme.fontFamily
                                     font.pixelSize: 13
-                                    font.weight: parent.parent.on ? Font.DemiBold : Font.Normal
+                                    font.weight: modeItem.on ? Font.DemiBold : Font.Normal
                                     anchors.verticalCenter: parent.verticalCenter
                                 }
                             }
                             HoverHandler { cursorShape: Qt.PointingHandCursor }
-                            TapHandler { onTapped: { editor.flush(); page.mode = parent.modelData.id; page.boatShown = true } }
+                            TapHandler { onTapped: modeItem.hintActivate() }
                         }
                     }
                 }
@@ -333,7 +493,7 @@ Page {
                 radius: 12
                 color: Theme.surface
                 border.color: info ? Theme.alpha(Theme.accent, 0.45) : Theme.border
-                readonly property var info: page.locInfo(Notes.locationFilter)
+                readonly property var info: (Notes.revision, page.locInfo(page.location))
                 property bool renaming: false
                 property bool confirmDelete: false
                 onInfoChanged: { renaming = false; confirmDelete = false }
@@ -342,14 +502,13 @@ Page {
                     anchors.leftMargin: 12
                     anchors.rightMargin: 6
                     spacing: 6
-                    Icon { name: whereBar.info && whereBar.info.spot ? "pin" : "boat"; size: 16; color: whereBar.info ? Theme.accent : Theme.textDim }
+                    Icon { name: whereBar.info && whereBar.info.depth >= 3 ? "pin" : "boat"; size: 16; color: whereBar.info ? Theme.accent : Theme.textDim }
                     Column {
                         Layout.fillWidth: true
                         visible: !whereBar.renaming
                         Text {
                             width: parent.width
-                            text: whereBar.info ? Boat.viewLabel(whereBar.info.view).toUpperCase()
-                                                  + (whereBar.info.spot && Boat.zoneById[whereBar.info.zone] ? "  ›  " + Boat.zoneById[whereBar.info.zone].name.toUpperCase() : "")
+                            text: whereBar.info ? whereBar.info.crumbs.slice(0, -1).join("  ›  ").toUpperCase() || Boat.name.toUpperCase()
                                                 : Boat.name.toUpperCase()
                             color: Theme.textFaint
                             elide: Text.ElideRight
@@ -375,7 +534,7 @@ Page {
                         font.family: Theme.fontFamily
                         font.pixelSize: 14
                         background: Rectangle { radius: 8; color: Theme.surfaceHi; border.color: Theme.accent }
-                        onAccepted: { Notes.updateSpot(Notes.locationFilter, { name: text }); whereBar.renaming = false }
+                        onAccepted: { page.setLocation(Notes.renameSpot(page.location, text)); whereBar.renaming = false }
                         Keys.onEscapePressed: whereBar.renaming = false
                     }
                     Chip {
@@ -399,17 +558,17 @@ Page {
                         checked: whereBar.confirmDelete
                         onClicked: {
                             if (!whereBar.confirmDelete) { whereBar.confirmDelete = true; spotConfirm.restart(); return }
-                            const id = Notes.locationFilter
-                            Notes.removeSpot(id)       // its notes move up to the zone
-                            page.setLocation(Notes.locationFilter)
+                            const parent = page.location.slice(0, page.location.lastIndexOf("/"))
+                            Notes.removeSpot(page.location)      // its notes move up to the zone
+                            page.setLocation(parent)
                         }
                         Timer { id: spotConfirm; interval: 3000; onTriggered: whereBar.confirmDelete = false }
                     }
                     Chip {
                         visible: !!whereBar.info && !whereBar.renaming
                         compact: true
-                        icon: "close"
-                        onClicked: page.setLocation(whereBar.info.spot ? whereBar.info.zone : "")
+                        icon: "back"
+                        onClicked: page.up()
                     }
                 }
             }
@@ -432,7 +591,7 @@ Page {
                         TextField {
                             id: searchField
                             Layout.fillWidth: true
-                            placeholderText: qsTr("Search, or #tag")
+                            placeholderText: qsTr("Search, or #tag   ( / )")
                             placeholderTextColor: Theme.textFaint
                             color: Theme.text
                             font.family: Theme.fontFamily
@@ -440,10 +599,12 @@ Page {
                             background: null
                             text: Notes.search
                             onTextEdited: Notes.search = text
+                            Keys.onReturnPressed: { Keyboard.release(); if (Notes.count) page.first() }
                         }
                     }
                 }
                 Rectangle {
+                    id: newButton
                     Layout.preferredWidth: 38
                     Layout.preferredHeight: 38
                     radius: 19
@@ -453,16 +614,16 @@ Page {
                     }
                     scale: newTap.pressed ? 0.92 : newHover.hovered ? 1.06 : 1
                     Behavior on scale { NumberAnimation { duration: Theme.fast; easing.type: Easing.OutBack } }
+                    readonly property bool hintable: true
+                    function hintActivate() { page.newNote() }
                     Icon { anchors.centerIn: parent; name: "plus"; size: 18; color: Theme.bg; stroke: 2.4 }
                     HoverHandler { id: newHover; cursorShape: Qt.PointingHandCursor }
                     TapHandler { id: newTap; onTapped: page.newNote() }
                     ToolTip.visible: newHover.hovered
-                    ToolTip.text: qsTr("New note (Ctrl+N)")
+                    ToolTip.text: qsTr("New note here (o)")
                     ToolTip.delay: 600
                 }
             }
-            Shortcut { sequences: [StandardKey.New]; enabled: page.active; onActivated: page.newNote() }
-            Shortcut { sequences: [StandardKey.Find]; enabled: page.active; onActivated: searchField.forceActiveFocus() }
 
             SysCombo {
                 visible: page.compact && !page.boatMode
@@ -488,23 +649,8 @@ Page {
                     NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 260 }
                     NumberAnimation { property: "scale"; from: 0.94; to: 1; duration: 320; easing.type: Easing.OutBack }
                 }
-                remove: Transition {
-                    NumberAnimation { property: "opacity"; to: 0; duration: 200 }
-                    NumberAnimation { property: "x"; to: -40; duration: 200 }
-                }
                 move: Transition { NumberAnimation { properties: "y"; duration: 380; easing.type: Easing.OutCubic } }
                 displaced: Transition { NumberAnimation { properties: "y"; duration: 380; easing.type: Easing.OutCubic } }
-                populate: Transition {
-                    id: pop
-                    SequentialAnimation {
-                        PropertyAction { property: "opacity"; value: 0 }
-                        PauseAnimation { duration: pop.ViewTransition.index * 40 }
-                        ParallelAnimation {
-                            NumberAnimation { property: "opacity"; to: 1; duration: 260 }
-                            NumberAnimation { property: "y"; from: pop.ViewTransition.destination.y + 16; duration: 360; easing.type: Easing.OutCubic }
-                        }
-                    }
-                }
 
                 delegate: Rectangle {
                     id: noteCard
@@ -517,6 +663,8 @@ Page {
                     required property string preview
                     required property string location
                     readonly property bool current: page.currentId === noteId
+                    readonly property bool hintable: true
+                    function hintActivate() { page.select(noteId) }
                     width: noteList.width
                     height: col.implicitHeight + 24
                     radius: 14
@@ -573,8 +721,8 @@ Page {
                             spacing: 6
                             Chip { compact: true; text: noteCard.system; icon: page.sysIcon(noteCard.system); accent: Theme.accent; checked: true
                                    onClicked: { page.mode = "systems"; Notes.systemFilter = noteCard.system } }
-                            Chip { compact: true; visible: text.length > 0; text: (Notes.spots, page.locLabel(noteCard.location))
-                                   icon: Boat.zoneById[noteCard.location] ? "boat" : "pin"; accent: Theme.accent2; checked: true
+                            Chip { compact: true; visible: noteCard.location !== ""; text: page.locLabel(noteCard.location)
+                                   icon: noteCard.location.split("/").length >= 3 ? "pin" : "boat"; accent: Theme.accent2; checked: true
                                    onClicked: page.showOnBoat(noteCard.location) }
                             Repeater {
                                 model: noteCard.tags
@@ -584,7 +732,10 @@ Page {
                         }
                     }
                     HoverHandler { id: cardHover; cursorShape: Qt.PointingHandCursor }
-                    TapHandler { onTapped: page.select(noteCard.noteId) }
+                    TapHandler {
+                        onTapped: page.select(noteCard.noteId)
+                        onDoubleTapped: { page.select(noteCard.noteId); page.editCurrent() }
+                    }
                 }
 
                 Column {
@@ -595,15 +746,15 @@ Page {
                     Text {
                         anchors.horizontalCenter: parent.horizontalCenter
                         text: Notes.search ? qsTr("No notes match")
-                          : page.boatMode && Notes.locationFilter ? qsTr("Nothing filed here yet") : qsTr("No notes here yet")
+                              : page.boatMode && page.location ? qsTr("Nothing filed here yet") : qsTr("No notes yet")
                         color: Theme.textDim; font.family: Theme.fontFamily; font.pixelSize: 14
                     }
-                    Chip { anchors.horizontalCenter: parent.horizontalCenter; text: qsTr("New note"); icon: "plus"; onClicked: page.newNote() }
+                    Chip { anchors.horizontalCenter: parent.horizontalCenter; text: qsTr("New note  (o)"); icon: "plus"; onClicked: page.newNote() }
                 }
             }
         }
 
-        // ---- Boat drawing / editor ---------------------------------------
+        // ---- Boat drawing / preview ---------------------------------------
         Item {
             Layout.fillWidth: true
             Layout.fillHeight: true
@@ -627,11 +778,12 @@ Page {
                         model: Boat.views
                         Chip {
                             required property var modelData
+                            required property int index
                             compact: page.compact
                             text: modelData.label
                             icon: ({ outside: "boat", deck: "hull", below: "home" })[modelData.id] || "boat"
                             checked: page.boatView === modelData.id
-                            onClicked: page.boatView = modelData.id
+                            onClicked: page.setView(index)
                         }
                     }
                     Item { Layout.fillWidth: true }
@@ -643,13 +795,21 @@ Page {
                         checked: boatCanvas.placing
                         onClicked: boatCanvas.placing = !boatCanvas.placing
                     }
+                    Chip {
+                        icon: "data"
+                        compact: page.compact
+                        text: page.compact ? "" : qsTr("Neovim")
+                        accent: Theme.good
+                        checked: Nvim.running
+                        onClicked: page.terminal()
+                    }
                 }
 
                 BoatView {
                     id: boatCanvas
                     anchors { left: parent.left; right: parent.right; top: boatBar.bottom; bottom: parent.bottom; margins: 6 }
-                    view: Boat.views.find(v => v.id === page.boatView) || Boat.views[0]
-                    selection: Notes.locationFilter
+                    view: Boat.viewById(page.boatView) || Boat.views[0]
+                    selection: page.location
                     onSelected: loc => page.setLocation(loc)
                     onSpotCreated: id => page.setLocation(id)
                     onViewChanged: viewIn.restart()
@@ -670,16 +830,16 @@ Page {
                 Text {
                     visible: !page.compact
                     anchors { right: parent.right; bottom: parent.bottom; margins: 16 }
-                    text: qsTr("Tap a part to file notes there · double-tap or long-press to drop a spot · drag spots to move them")
+                    text: qsTr("f  hints  ·  J/K  parts of the boat  ·  1 2 3  views  ·  a  add spot  ·  ?  all keys")
                     color: Theme.textFaint
                     font.family: Theme.fontFamily
                     font.pixelSize: 11
                 }
             }
 
-            // ---- Editor ----------------------------------------------------
+            // Read-only preview; editing happens in Neovim.
             Rectangle {
-                id: editor
+                id: preview
                 anchors.fill: parent
                 opacity: page.boatVisible ? 0 : 1
                 visible: opacity > 0.01
@@ -688,292 +848,113 @@ Page {
                 radius: Theme.radius
                 color: Theme.surface
                 border.color: Theme.border
-
-                property var note: ({})
-                property bool loading: false
-                property bool preview: false
-                property bool dirty: false
-                property string savedAt: ""
                 property bool confirmDelete: false
-                property string locValue: ""
 
-                function load() {
-                    loading = true
-                    note = page.currentId ? Notes.get(page.currentId) : ({})
-                    titleField.text = note.title || ""
-                    body.text = note.body || ""
-                    tagsField.text = (note.tags || []).join(", ")
-                    systemBox.currentIndex = Math.max(0, systemBox.indexOfValue(note.system || "General"))
-                    locValue = note.location || ""
-                    preview = page.currentId !== "" && (note.body || "").length > 0
-                    dirty = false
-                    savedAt = ""
-                    confirmDelete = false
-                    loading = false
-                    switchAnim.restart()
-                }
-                function changed() { if (!loading && page.currentId) { dirty = true; saveTimer.restart() } }
-                function flush() {
-                    if (!dirty || !page.currentId) return
-                    saveTimer.stop()
-                    Notes.save(page.currentId, { title: titleField.text || qsTr("Untitled note"), body: body.text,
-                                                 tags: tagsField.text, system: systemBox.currentValue,
-                                                 location: locValue })
-                    dirty = false
-                    savedAt = new Date().toLocaleTimeString(Qt.locale(), "HH:mm")
-                }
-                function focusTitle() { preview = false; titleField.forceActiveFocus(); titleField.selectAll() }
-
-                Connections {
-                    target: page
-                    function onCurrentIdChanged() {
-                        editor.load()
-                        if (!page.currentId && page.boatMode) page.boatShown = true
-                    }
-                }
-                Timer { id: saveTimer; interval: 700; onTriggered: editor.flush() }
-
-                SequentialAnimation {
-                    id: switchAnim
-                    PropertyAction { target: editorBody; property: "opacity"; value: 0 }
-                    PropertyAction { target: editorShift; property: "x"; value: 18 }
-                    ParallelAnimation {
-                        NumberAnimation { target: editorBody; property: "opacity"; to: 1; duration: 260 }
-                        NumberAnimation { target: editorShift; property: "x"; to: 0; duration: 380; easing.type: Easing.OutCubic }
-                    }
-                }
-
-                // Empty state
                 Column {
                     anchors.centerIn: parent
-                    visible: page.currentId === ""
+                    visible: !page.current.noteId
                     spacing: 14
                     Icon { anchors.horizontalCenter: parent.horizontalCenter; name: "boat"; size: 56; color: Theme.textFaint; stroke: 1.2 }
                     Text {
                         anchors.horizontalCenter: parent.horizontalCenter
-                        text: qsTr("Pick a note, or start a new one")
+                        text: qsTr("Pick a note (j / k), or start one (o)")
                         color: Theme.textDim; font.family: Theme.fontFamily; font.pixelSize: 16
                     }
                     Text {
                         anchors.horizontalCenter: parent.horizontalCenter
-                        text: qsTr("%1 notes · saved as Markdown in %2").arg(Notes.total).arg(Notes.folder)
+                        text: qsTr("%1 notes in %2").arg(Notes.total).arg(Notes.root)
                         color: Theme.textFaint; font.family: Theme.fontFamily; font.pixelSize: 12
                     }
                 }
 
                 ColumnLayout {
-                    id: editorBody
                     anchors.fill: parent
                     anchors.margins: 22
                     spacing: 12
-                    visible: page.currentId !== ""
-                    transform: Translate { id: editorShift }
+                    visible: !!page.current.noteId
 
-                    TextField {
-                        id: titleField
-                        Layout.fillWidth: true
-                        placeholderText: qsTr("Title")
-                        placeholderTextColor: Theme.textFaint
-                        color: Theme.text
-                        font.family: Theme.fontFamily
-                        font.pixelSize: 26
-                        font.weight: Font.DemiBold
-                        background: null
-                        leftPadding: 0
-                        onTextEdited: editor.changed()
-                        Keys.onReturnPressed: { editor.preview = false; body.forceActiveFocus() }
-                    }
-
-                    // Meta: system and place on the boat; then tags, pin, delete.
                     RowLayout {
                         Layout.fillWidth: true
                         spacing: 8
-                        SysCombo {
-                            id: systemBox
-                            Layout.preferredWidth: 170
-                            model: Notes.systems
-                            onActivated: editor.changed()
-                        }
-                        SysCombo {
-                            id: locBox
-                            Layout.fillWidth: true
-                            Layout.minimumWidth: 120
-                            textRole: "text"
-                            valueRole: "value"
-                            model: page.locationChoices
-                            iconFor: v => (page.locationChoices.find(c => c.value === v) || { icon: "note" }).icon
-                            displayText: editor.locValue ? page.locLabel(editor.locValue) : qsTr("Not on the boat")
-                            currentIndex: page.locationChoices.findIndex(c => c.value === editor.locValue)
-                            onActivated: index => {
-                                editor.locValue = page.locationChoices[index].value
-                                currentIndex = Qt.binding(() => page.locationChoices.findIndex(c => c.value === editor.locValue))
-                                editor.changed()
-                            }
-                        }
-                        Chip {
-                            visible: editor.locValue !== ""
-                            icon: "boat"
-                            compact: true
-                            accent: Theme.accent2
-                            onClicked: page.showOnBoat(editor.locValue)
-                            ToolTip.visible: showHover.hovered
-                            ToolTip.text: qsTr("Show on the boat")
-                            ToolTip.delay: 600
-                            HoverHandler { id: showHover }
-                        }
-                    }
-                    RowLayout {
-                        Layout.fillWidth: true
-                        spacing: 8
-                        Rectangle {
-                            Layout.fillWidth: true
-                            Layout.preferredHeight: 32
-                            radius: 16
-                            color: "transparent"
-                            border.color: tagsField.activeFocus ? Theme.accent : Theme.border
-                            RowLayout {
-                                anchors.fill: parent
-                                anchors.leftMargin: 12
-                                anchors.rightMargin: 8
-                                Icon { name: "tag"; size: 14; color: Theme.textDim }
-                                TextField {
-                                    id: tagsField
-                                    Layout.fillWidth: true
-                                    placeholderText: qsTr("tags, comma separated")
-                                    placeholderTextColor: Theme.textFaint
-                                    color: Theme.text
-                                    font.family: Theme.fontFamily
-                                    font.pixelSize: 13
-                                    background: null
-                                    onTextEdited: editor.changed()
-                                }
-                            }
-                        }
-                        Chip {
-                            icon: "pin"
-                            text: editor.note.pinned ? qsTr("Pinned") : qsTr("Pin")
-                            checked: !!editor.note.pinned
-                            accent: Theme.warn
-                            onClicked: {
-                                editor.flush()
-                                Notes.save(page.currentId, { pinned: !editor.note.pinned })
-                                editor.note = Notes.get(page.currentId)
-                            }
-                        }
-                        Chip {
-                            icon: "trash"
-                            text: editor.confirmDelete ? qsTr("Delete?") : ""
-                            accent: Theme.danger
-                            checked: editor.confirmDelete
-                            onClicked: {
-                                if (!editor.confirmDelete) { editor.confirmDelete = true; confirmTimer.restart(); return }
-                                const id = page.currentId
-                                editor.dirty = false
-                                page.currentId = ""
-                                Notes.remove(id)
-                            }
-                            Timer { id: confirmTimer; interval: 3000; onTriggered: editor.confirmDelete = false }
-                        }
-                    }
-
-                    // Toolbar
-                    RowLayout {
-                        Layout.fillWidth: true
-                        spacing: 6
                         Chip {
                             visible: page.boatMode
                             icon: "back"
                             text: qsTr("Boat")
                             accent: Theme.accent2
-                            onClicked: { editor.flush(); page.boatShown = true }
+                            onClicked: page.boatShown = true
                         }
-                        Row {
-                            spacing: 0
-                            Chip { text: qsTr("Edit"); icon: "edit"; checked: !editor.preview; onClicked: { editor.preview = false; body.forceActiveFocus() } }
-                            Item { width: 6; height: 1 }
-                            Chip { text: qsTr("Preview"); icon: "eye"; checked: editor.preview; onClicked: { editor.flush(); editor.preview = true } }
-                        }
-                        Item { width: 8 }
-                        Chip {
-                            text: qsTr("Insert readings")
-                            icon: "gauge"
-                            accent: Theme.accent2
-                            onClicked: {
-                                editor.preview = false
-                                body.insert(body.cursorPosition, page.readingsMarkdown())
-                                body.forceActiveFocus()
-                            }
-                        }
-                        Item { Layout.fillWidth: true }
                         Text {
-                            text: editor.dirty ? qsTr("Editing…") : editor.savedAt ? qsTr("Saved %1").arg(editor.savedAt)
-                                  : editor.note.updated ? qsTr("Updated %1").arg(Units.relativeTime(editor.note.updated)) : ""
-                            color: editor.dirty ? Theme.textDim : Theme.textFaint
+                            Layout.fillWidth: true
+                            text: page.current.title || ""
+                            elide: Text.ElideRight
+                            color: Theme.text
                             font.family: Theme.fontFamily
-                            font.pixelSize: 12
+                            font.pixelSize: 24
+                            font.weight: Font.DemiBold
                         }
                     }
-
+                    Flow {
+                        Layout.fillWidth: true
+                        spacing: 6
+                        Chip { compact: true; text: page.current.system || ""; icon: page.sysIcon(page.current.system || ""); checked: true
+                               onClicked: { page.mode = "systems"; Notes.systemFilter = page.current.system } }
+                        Chip { compact: true; visible: !!page.current.location; text: (page.locInfo(page.current.location) || { crumbs: [] }).crumbs.join(" › ")
+                               icon: "boat"; accent: Theme.accent2; checked: true; onClicked: page.showOnBoat(page.current.location) }
+                        Repeater {
+                            model: page.current.tags || []
+                            Chip { required property string modelData; compact: true; text: "#" + modelData; onClicked: Notes.search = "#" + modelData }
+                        }
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 6
+                        Chip { icon: "edit"; text: qsTr("Edit in Neovim  e"); accent: Theme.good; checked: true; onClicked: page.editCurrent() }
+                        Chip { icon: "pin"; text: page.current.pinned ? qsTr("Pinned") : qsTr("Pin  p"); checked: !!page.current.pinned; accent: Theme.warn; onClicked: page.togglePin() }
+                        Chip { visible: !page.compact; icon: "gauge"; text: qsTr("Insert readings  i"); accent: Theme.accent2; onClicked: page.insertReadings() }
+                        Item { Layout.fillWidth: true }
+                        Chip {
+                            icon: "trash"
+                            text: preview.confirmDelete ? qsTr("Delete? dd") : ""
+                            accent: Theme.danger
+                            checked: preview.confirmDelete
+                            onClicked: page.deleteCurrent()
+                        }
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        text: "boat/" + (page.current.noteId || "") + "  ·  " + qsTr("updated %1").arg(Units.relativeTime(page.current.updated))
+                        color: Theme.textFaint
+                        elide: Text.ElideMiddle
+                        font.family: Theme.monoFamily
+                        font.pixelSize: 11
+                    }
                     Rectangle { Layout.fillWidth: true; height: 1; color: Theme.border }
 
-                    // Body: editor and rendered preview cross-fade.
-                    Item {
+                    Flickable {
+                        id: previewFlick
                         Layout.fillWidth: true
                         Layout.fillHeight: true
-
-                        ScrollView {
-                            id: editScroll
-                            anchors.fill: parent
-                            opacity: editor.preview ? 0 : 1
-                            visible: opacity > 0
-                            Behavior on opacity { NumberAnimation { duration: 220 } }
-                            TextArea {
-                                id: body
-                                wrapMode: TextEdit.Wrap
-                                color: Theme.text
-                                selectionColor: Theme.alpha(Theme.accent, 0.35)
-                                selectedTextColor: Theme.text
-                                font.family: Theme.monoFamily
-                                font.pixelSize: 14
-                                placeholderText: qsTr("Write in Markdown…  # heading, **bold**, - [ ] checklist")
-                                placeholderTextColor: Theme.textFaint
-                                background: null
-                                leftPadding: 0
-                                onTextChanged: editor.changed()
-                            }
+                        contentHeight: rendered.implicitHeight + 20
+                        clip: true
+                        boundsBehavior: Flickable.StopAtBounds
+                        ScrollBar.vertical: ScrollBar {}
+                        Text {
+                            id: rendered
+                            width: previewFlick.width - 12
+                            text: page.current.body || ""
+                            textFormat: Text.MarkdownText
+                            wrapMode: Text.WordWrap
+                            color: Theme.text
+                            linkColor: Theme.accent2
+                            font.family: Theme.fontFamily
+                            font.pixelSize: 15
+                            lineHeight: 1.15
+                            onLinkActivated: link => Qt.openUrlExternally(link)
                         }
-
-                        Flickable {
-                            id: previewFlick
-                            anchors.fill: parent
-                            opacity: editor.preview ? 1 : 0
-                            visible: opacity > 0
-                            Behavior on opacity { NumberAnimation { duration: 220 } }
-                            contentHeight: rendered.implicitHeight + 20
-                            clip: true
-                            boundsBehavior: Flickable.StopAtBounds
-                            ScrollBar.vertical: ScrollBar {}
-                            Text {
-                                id: rendered
-                                width: previewFlick.width - 12
-                                text: body.text
-                                textFormat: Text.MarkdownText
-                                wrapMode: Text.WordWrap
-                                color: Theme.text
-                                linkColor: Theme.accent2
-                                font.family: Theme.fontFamily
-                                font.pixelSize: 15
-                                lineHeight: 1.15
-                                onLinkActivated: link => Qt.openUrlExternally(link)
-                            }
-                            TapHandler { onDoubleTapped: { editor.preview = false; body.forceActiveFocus() } }
-                        }
+                        TapHandler { onDoubleTapped: page.editCurrent() }
                     }
                 }
             }
         }
     }
-
-    onActiveChanged: if (!active) editor.flush()
-    Shortcut { sequence: "Escape"; enabled: page.active && page.boatMode && !page.boatShown; onActivated: { editor.flush(); page.boatShown = true } }
 }

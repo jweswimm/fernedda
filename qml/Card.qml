@@ -18,6 +18,8 @@ Item {
     default property alias content: body.data
 
     signal opened()
+    readonly property bool hintable: interactive
+    function hintActivate() { opened() }
 
     // Entrance
     opacity: 0

@@ -1,18 +1,21 @@
 #include "NotesModel.h"
 
 #include <QDir>
+#include <QDirIterator>
 #include <QFile>
-#include <QJsonArray>
+#include <QFileInfo>
+#include <QJSEngine>
 #include <QJsonDocument>
 #include <QJsonObject>
-#include <QJSEngine>
 #include <QQmlEngine>
-#include <QRandomGenerator>
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QSet>
-#include <QStandardPaths>
 #include <algorithm>
+
+#ifndef FERNEDDA_SOURCE_DIR
+#define FERNEDDA_SOURCE_DIR "."
+#endif
 
 namespace {
 const QStringList kDefaultSystems = {
@@ -35,7 +38,49 @@ QString stripMarkdown(const QString &body)
     s.replace(ws, QStringLiteral(" "));
     return s.trimmed().left(160);
 }
+
+// "raw-water_strainer" → "raw water strainer"
+QString pretty(QString s)
+{
+    s.replace('-', ' ').replace('_', ' ');
+    return s.trimmed();
+}
+
+// Split optional front-matter off a note. Returns the body; fills `meta`.
+QString splitFrontMatter(const QString &text, QMap<QString, QString> &meta)
+{
+    if (!(text.startsWith("---\n") || text.startsWith("---\r\n")))
+        return text;
+    const int start = text.indexOf('\n') + 1;
+    static const QRegularExpression fence(QStringLiteral("^---\\s*$"), QRegularExpression::MultilineOption);
+    const int end = text.indexOf(fence, start);
+    if (end < 0)
+        return text;
+    for (const QString &line : text.mid(start, end - start).split('\n')) {
+        const int colon = line.indexOf(':');
+        if (colon > 0)
+            meta.insert(line.left(colon).trimmed().toLower(), line.mid(colon + 1).trimmed());
+    }
+    const int bodyStart = text.indexOf('\n', end);
+    return bodyStart < 0 ? QString() : text.mid(bodyStart + 1);
+}
 } // namespace
+
+// The body without a leading "# Title" line that just repeats the title.
+QString NotesModel::withoutTitle(const Note &n)
+{
+    const QString head = "# " + n.title;
+    if (!n.body.startsWith(head))
+        return n.body;
+    const int nl = n.body.indexOf('\n');
+    if (nl < 0)
+        return {};
+    if (n.body.left(nl).trimmed() != head)
+        return n.body;
+    QString rest = n.body.mid(nl + 1);
+    while (rest.startsWith('\n')) rest.remove(0, 1);
+    return rest;
+}
 
 NotesModel *NotesModel::create(QQmlEngine *, QJSEngine *)
 {
@@ -46,142 +91,113 @@ NotesModel *NotesModel::create(QQmlEngine *, QJSEngine *)
 
 NotesModel::NotesModel(QObject *parent) : QAbstractListModel(parent)
 {
-    m_dir = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation) + "/fernedda/notes";
-    QDir().mkpath(m_dir);
-    load();
-    loadSpots();
-    if (m_all.isEmpty())
-        seed();
+    const QByteArray env = qgetenv("FERNEDDA_BOAT_DIR");
+    m_root = QDir::cleanPath(env.isEmpty() ? QStringLiteral(FERNEDDA_SOURCE_DIR "/boat") : QString::fromLocal8Bit(env));
+    QDir().mkpath(m_root);
+
+    m_rescan.setSingleShot(true);
+    m_rescan.setInterval(120);
+    connect(&m_rescan, &QTimer::timeout, this, &NotesModel::scan);
+    connect(&m_watcher, &QFileSystemWatcher::directoryChanged, &m_rescan, qOverload<>(&QTimer::start));
+    connect(&m_watcher, &QFileSystemWatcher::fileChanged, &m_rescan, qOverload<>(&QTimer::start));
+
+    scan();
+}
+
+// ---- scanning ------------------------------------------------------------
+
+void NotesModel::scanDir(const QString &rel, int depth, QStringList &dirs, QStringList &files)
+{
+    const QDir dir(m_root + (rel.isEmpty() ? QString() : "/" + rel));
+    dirs << dir.absolutePath();
+    for (const QFileInfo &fi : dir.entryInfoList(QDir::Dirs | QDir::Files | QDir::NoDotAndDotDot, QDir::Name)) {
+        if (fi.fileName().startsWith('.'))
+            continue; // .trash, .place.json, editor swap files
+        const QString childRel = rel.isEmpty() ? fi.fileName() : rel + "/" + fi.fileName();
+        if (fi.isDir()) {
+            if (depth == 2) { // view/zone/<spot>
+                Spot sp;
+                sp.id = childRel;
+                sp.name = pretty(fi.fileName());
+                sp.view = rel.section('/', 0, 0);
+                sp.zone = rel;
+                QFile place(fi.absoluteFilePath() + "/.place.json");
+                if (place.open(QIODevice::ReadOnly)) {
+                    const QJsonObject o = QJsonDocument::fromJson(place.readAll()).object();
+                    if (o.contains("x") && o.contains("y")) {
+                        sp.x = o.value("x").toDouble();
+                        sp.y = o.value("y").toDouble();
+                        sp.placed = true;
+                    }
+                }
+                m_spots.append(sp);
+            }
+            if (depth < 8)
+                scanDir(childRel, depth + 1, dirs, files);
+        } else if (fi.suffix().compare("md", Qt::CaseInsensitive) == 0) {
+            files << fi.absoluteFilePath();
+            Note n;
+            if (readNote(childRel, n))
+                m_all.append(n);
+        }
+    }
+}
+
+bool NotesModel::readNote(const QString &rel, Note &n) const
+{
+    const QFileInfo fi(m_root + "/" + rel);
+    QFile f(fi.absoluteFilePath());
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
+        return false;
+    QMap<QString, QString> meta;
+    n.id = rel;
+    n.location = rel.contains('/') ? rel.section('/', 0, -2) : QString();
+    n.body = splitFrontMatter(QString::fromUtf8(f.readAll()), meta);
+    n.title = meta.value("title");
+    if (n.title.isEmpty()) {
+        static const QRegularExpression h1(QStringLiteral("^#\\s+(.+)$"), QRegularExpression::MultilineOption);
+        const auto m = h1.match(n.body);
+        n.title = m.hasMatch() ? m.captured(1).trimmed() : pretty(fi.completeBaseName());
+    }
+    n.system = meta.value("system");
+    if (n.system.isEmpty())
+        n.system = m_zoneSystems.value(n.location.section('/', 0, 1), QStringLiteral("General")).toString();
+    n.pinned = meta.value("pinned") == "true";
+    for (const QString &t : meta.value("tags").split(',', Qt::SkipEmptyParts))
+        if (!t.trimmed().isEmpty()) n.tags << t.trimmed();
+    n.updated = fi.lastModified();
+    n.created = QDateTime::fromString(meta.value("created"), Qt::ISODate);
+    if (!n.created.isValid())
+        n.created = fi.birthTime().isValid() ? fi.birthTime() : n.updated;
+    return true;
+}
+
+void NotesModel::scan()
+{
+    m_all.clear();
+    m_spots.clear();
+    QStringList dirs, files;
+    scanDir({}, 0, dirs, files);
+
+    // Watch exactly what's there now.
+    const QStringList watched = m_watcher.directories() + m_watcher.files();
+    if (!watched.isEmpty())
+        m_watcher.removePaths(watched);
+    m_watcher.addPaths(dirs);
+    if (!files.isEmpty())
+        m_watcher.addPaths(files);
+
+    emit spotsChanged();
     refreshSystems();
     refresh();
 }
 
-// ---- file format ---------------------------------------------------------
-//
-// ---
-// title: Oil change
-// system: Engine
-// location: engine            (optional: boat zone or spot id)
-// tags: maintenance, oil
-// pinned: false
-// created: 2026-11-02T10:00:00Z
-// updated: 2026-11-02T10:05:00Z
-// ---
-// Markdown body…
-
-bool NotesModel::parse(const QString &text, Note &n)
+void NotesModel::setZones(const QVariantMap &zoneSystems)
 {
-    QString body = text;
-    if (text.startsWith("---\n") || text.startsWith("---\r\n")) {
-        const int start = text.indexOf('\n') + 1;
-        const int end = text.indexOf(QRegularExpression("^---\\s*$", QRegularExpression::MultilineOption), start);
-        if (end < 0)
-            return false;
-        const QStringList lines = text.mid(start, end - start).split('\n');
-        for (const QString &line : lines) {
-            const int colon = line.indexOf(':');
-            if (colon < 0) continue;
-            const QString key = line.left(colon).trimmed();
-            const QString val = line.mid(colon + 1).trimmed();
-            if (key == "title") n.title = val;
-            else if (key == "system") n.system = val;
-            else if (key == "location") n.location = val;
-            else if (key == "pinned") n.pinned = (val == "true");
-            else if (key == "created") n.created = QDateTime::fromString(val, Qt::ISODate);
-            else if (key == "updated") n.updated = QDateTime::fromString(val, Qt::ISODate);
-            else if (key == "tags") {
-                for (const QString &t : val.split(',', Qt::SkipEmptyParts))
-                    if (!t.trimmed().isEmpty()) n.tags << t.trimmed();
-            }
-        }
-        const int bodyStart = text.indexOf('\n', end);
-        body = bodyStart < 0 ? QString() : text.mid(bodyStart + 1);
-    }
-    n.body = body;
-    return true;
-}
-
-bool NotesModel::write(const Note &n) const
-{
-    QSaveFile f(m_dir + "/" + n.id + ".md");
-    if (!f.open(QIODevice::WriteOnly | QIODevice::Text))
-        return false;
-    auto oneLine = [](QString s) { return s.replace('\n', ' ').trimmed(); };
-    QString out;
-    out += "---\n";
-    out += "title: " + oneLine(n.title) + "\n";
-    out += "system: " + oneLine(n.system) + "\n";
-    if (!n.location.isEmpty())
-        out += "location: " + oneLine(n.location) + "\n";
-    out += "tags: " + oneLine(n.tags.join(", ")) + "\n";
-    out += QStringLiteral("pinned: %1\n").arg(n.pinned ? "true" : "false");
-    out += "created: " + n.created.toUTC().toString(Qt::ISODate) + "\n";
-    out += "updated: " + n.updated.toUTC().toString(Qt::ISODate) + "\n";
-    out += "---\n";
-    out += n.body;
-    f.write(out.toUtf8());
-    return f.commit();
-}
-
-void NotesModel::load()
-{
-    const QDir dir(m_dir);
-    for (const QFileInfo &fi : dir.entryInfoList({"*.md"}, QDir::Files)) {
-        QFile f(fi.absoluteFilePath());
-        if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
-            continue;
-        Note n;
-        n.id = fi.completeBaseName();
-        if (!parse(QString::fromUtf8(f.readAll()), n))
-            continue;
-        if (!n.created.isValid()) n.created = fi.birthTime().isValid() ? fi.birthTime() : fi.lastModified();
-        if (!n.updated.isValid()) n.updated = fi.lastModified();
-        if (n.title.isEmpty()) n.title = n.id;
-        if (n.system.isEmpty()) n.system = "General";
-        m_all.append(n);
-    }
-}
-
-void NotesModel::seed()
-{
-    const QDateTime now = QDateTime::currentDateTimeUtc();
-    auto add = [&](const QString &title, const QString &system, const QString &location,
-                   const QStringList &tags, bool pinned, int daysAgo, const QString &body) {
-        Note n;
-        n.id = QStringLiteral("seed-%1").arg(m_all.size() + 1);
-        n.title = title;
-        n.system = system;
-        n.location = location;
-        n.tags = tags;
-        n.pinned = pinned;
-        n.created = n.updated = now.addDays(-daysAgo);
-        n.body = body;
-        write(n);
-        m_all.append(n);
-    };
-
-    add("Welcome aboard", "General", {}, {"howto"}, true, 0,
-        "Notes are plain **Markdown** files, one per note, kept in\n"
-        "`~/.local/share/fernedda/notes/`. Edit them here or in any text editor.\n\n"
-        "## Tips\n\n"
-        "- File each note under a **system** (Engine, Rigging…) and add tags\n"
-        "- Or switch to **Boat** and tap a part of the boat to file notes there; double-tap to drop a named spot\n"
-        "- **Pin** the ones you need often; they stay at the top\n"
-        "- *Insert readings* stamps the current engine hours, battery and position into the note — handy for maintenance logs\n"
-        "- Use checklists:\n\n"
-        "- [x] Install fernedda\n"
-        "- [ ] Hook up a Signal K server\n");
-    add("Oil & filter change", "Engine", "engine", {"maintenance", "oil"}, false, 12,
-        "Changed oil and filter.\n\n"
-        "| Item | Detail |\n|---|---|\n"
-        "| Oil | 15W-40, 3.8 L |\n| Filter | (part number here) |\n| Engine hours | 1,838 |\n\n"
-        "Next change due around **1,938 h**.\n");
-    add("Rig check before season", "Rigging", "mast", {"inspection", "checklist"}, false, 30,
-        "- [ ] Inspect swage fittings for cracks\n"
-        "- [ ] Cotter pins taped at turnbuckles\n"
-        "- [ ] Halyards — chafe at sheaves\n"
-        "- [ ] Spreader boots\n"
-        "- [ ] Furler drum & swivel lubrication\n");
+    m_zoneSystems = zoneSystems;
+    for (auto it = zoneSystems.begin(); it != zoneSystems.end(); ++it)
+        QDir().mkpath(m_root + "/" + it.key());
+    scan();
 }
 
 // ---- model ---------------------------------------------------------------
@@ -205,9 +221,10 @@ QVariant NotesModel::data(const QModelIndex &index, int role) const
     case PinnedRole: return n.pinned;
     case CreatedRole: return n.created;
     case UpdatedRole: return n.updated;
-    case PreviewRole: return stripMarkdown(n.body);
-    case BodyRole: return n.body;
+    case PreviewRole: return stripMarkdown(withoutTitle(n));
+    case BodyRole: return withoutTitle(n);
     case LocationRole: return n.location;
+    case PathRole: return absPath(n.id);
     }
     return {};
 }
@@ -218,7 +235,7 @@ QHash<int, QByteArray> NotesModel::roleNames() const
         {IdRole, "noteId"}, {TitleRole, "title"}, {SystemRole, "system"},
         {TagsRole, "tags"}, {PinnedRole, "pinned"}, {CreatedRole, "created"},
         {UpdatedRole, "updated"}, {PreviewRole, "preview"}, {BodyRole, "body"},
-        {LocationRole, "location"},
+        {LocationRole, "location"}, {PathRole, "path"},
     };
 }
 
@@ -248,25 +265,16 @@ void NotesModel::setLocationFilter(const QString &s)
 
 bool NotesModel::inLocation(const Note &n, const QString &loc) const
 {
-    if (n.location == loc)
-        return true;
-    if (n.location.isEmpty())
-        return false;
-    for (const Spot &sp : m_spots)
-        if (sp.id == n.location)
-            return sp.zone == loc;
-    return false;
+    return loc.isEmpty() || n.location == loc || n.location.startsWith(loc + "/");
 }
 
 bool NotesModel::matches(const Note &n) const
 {
     if (!m_systemFilter.isEmpty() && n.system != m_systemFilter)
         return false;
-    if (!m_locationFilter.isEmpty() && !inLocation(n, m_locationFilter))
+    if (!inLocation(n, m_locationFilter))
         return false;
     const QString q = m_search.trimmed();
-    if (q.isEmpty())
-        return true;
     for (const QString &word : q.split(' ', Qt::SkipEmptyParts)) {
         if (word.startsWith('#')) {
             if (!n.tags.contains(word.mid(1), Qt::CaseInsensitive))
@@ -291,34 +299,37 @@ void NotesModel::refresh()
         if (x.pinned != y.pinned) return x.pinned;
         return x.updated > y.updated;
     });
+    QStringList nextIds;
+    for (int i : next) nextIds << m_all[i].id;
 
-    if (next == m_visible) {
+    if (nextIds == m_visibleIds) {
+        m_visible = next;
         if (!m_visible.isEmpty())
             emit dataChanged(index(0), index(m_visible.size() - 1));
-    } else if (next.size() == m_visible.size()
-               && QSet<int>(next.begin(), next.end()) == QSet<int>(m_visible.begin(), m_visible.end())) {
-        // Same notes, new order: if exactly one note moved, animate a move.
+    } else {
+        // Same notes, new order with exactly one moved: animate a move.
         int from = -1, to = -1;
-        for (int i = 0; i < m_visible.size(); ++i) {
-            QVector<int> trial = m_visible;
-            const int item = trial.takeAt(i);
-            const int dest = next.indexOf(item);
-            trial.insert(dest, item);
-            if (trial == next) { from = i; to = dest; break; }
+        if (nextIds.size() == m_visibleIds.size()
+            && QSet<QString>(nextIds.begin(), nextIds.end()) == QSet<QString>(m_visibleIds.begin(), m_visibleIds.end())) {
+            for (int i = 0; i < m_visibleIds.size(); ++i) {
+                QStringList trial = m_visibleIds;
+                const QString item = trial.takeAt(i);
+                const int dest = nextIds.indexOf(item);
+                trial.insert(dest, item);
+                if (trial == nextIds) { from = i; to = dest; break; }
+            }
         }
-        if (from >= 0 && beginMoveRows({}, from, from, {}, to > from ? to + 1 : to)) {
+        if (from >= 0 && from != to && beginMoveRows({}, from, from, {}, to > from ? to + 1 : to)) {
             m_visible = next;
+            m_visibleIds = nextIds;
             endMoveRows();
             emit dataChanged(index(0), index(m_visible.size() - 1));
         } else {
             beginResetModel();
             m_visible = next;
+            m_visibleIds = nextIds;
             endResetModel();
         }
-    } else {
-        beginResetModel();
-        m_visible = next;
-        endResetModel();
     }
     ++m_revision;
     emit countsChanged();
@@ -344,20 +355,42 @@ int NotesModel::find(const QString &id) const
     return -1;
 }
 
-QString NotesModel::create(const QString &system, const QString &location)
+// ---- notes ---------------------------------------------------------------
+
+QString NotesModel::slug(const QString &s)
 {
-    Note n;
-    n.created = n.updated = QDateTime::currentDateTimeUtc();
-    n.id = n.created.toString("yyyyMMdd-HHmmss") + "-"
-         + QString::number(QRandomGenerator::global()->bounded(0x10000), 16).rightJustified(4, '0');
-    n.title = tr("Untitled note");
-    n.system = system.isEmpty() ? QStringLiteral("General") : system;
-    n.location = location;
-    write(n);
-    m_all.append(n);
-    refreshSystems();
-    refresh();
-    return n.id;
+    QString out = s.trimmed().toLower();
+    static const QRegularExpression bad(QStringLiteral("[^a-z0-9]+"));
+    out.replace(bad, QStringLiteral("-"));
+    while (out.startsWith('-')) out.remove(0, 1);
+    while (out.endsWith('-')) out.chop(1);
+    return out.left(60);
+}
+
+QString NotesModel::uniquePath(const QString &dirRel, const QString &stem, const QString &ext) const
+{
+    const QString base = dirRel.isEmpty() ? stem : dirRel + "/" + stem;
+    QString rel = base + ext;
+    for (int i = 2; QFileInfo::exists(m_root + "/" + rel); ++i)
+        rel = base + "-" + QString::number(i) + ext;
+    return rel;
+}
+
+QString NotesModel::create(const QString &location, const QString &title)
+{
+    const QString t = title.trimmed().isEmpty() ? tr("Untitled note") : title.trimmed();
+    QString stem = slug(t);
+    if (stem.isEmpty()) stem = QStringLiteral("note");
+    QDir().mkpath(m_root + "/" + location);
+    const QString rel = uniquePath(location, stem, ".md");
+    QSaveFile f(m_root + "/" + rel);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Text))
+        return {};
+    f.write(("# " + t + "\n\n").toUtf8());
+    if (!f.commit())
+        return {};
+    scan();
+    return rel;
 }
 
 QVariantMap NotesModel::get(const QString &id) const
@@ -368,62 +401,47 @@ QVariantMap NotesModel::get(const QString &id) const
     const Note &n = m_all[i];
     return {
         {"noteId", n.id}, {"title", n.title}, {"system", n.system}, {"tags", n.tags},
-        {"pinned", n.pinned}, {"created", n.created}, {"updated", n.updated}, {"body", n.body},
-        {"location", n.location},
+        {"pinned", n.pinned}, {"created", n.created}, {"updated", n.updated}, {"body", withoutTitle(n)},
+        {"location", n.location}, {"path", absPath(n.id)},
     };
 }
 
-void NotesModel::save(const QString &id, const QVariantMap &fields)
+void NotesModel::setPinned(const QString &id, bool pinned)
 {
-    const int i = find(id);
-    if (i < 0)
+    QFile f(absPath(id));
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
         return;
-    Note &n = m_all[i];
-    const Note before = n;
-    if (fields.contains("title")) n.title = fields.value("title").toString();
-    if (fields.contains("body")) n.body = fields.value("body").toString();
-    if (fields.contains("system")) n.system = fields.value("system").toString();
-    if (fields.contains("location")) n.location = fields.value("location").toString();
-    if (fields.contains("pinned")) n.pinned = fields.value("pinned").toBool();
-    if (fields.contains("tags")) {
-        const QVariant t = fields.value("tags");
-        QStringList tags;
-        const QStringList raw = t.metaType().id() == QMetaType::QString ? t.toString().split(',')
-                                                                         : t.toStringList();
-        for (const QString &tag : raw) {
-            QString s = tag.trimmed();
-            if (s.startsWith('#')) s.remove(0, 1);
-            if (!s.isEmpty() && !tags.contains(s, Qt::CaseInsensitive)) tags << s;
-        }
-        n.tags = tags;
+    QString text = QString::fromUtf8(f.readAll());
+    f.close();
+    const QString line = QStringLiteral("pinned: %1").arg(pinned ? "true" : "false");
+    static const QRegularExpression existing(QStringLiteral("^pinned:.*$"), QRegularExpression::MultilineOption);
+    if (text.startsWith("---\n")) {
+        const int end = text.indexOf("\n---", 3);
+        const int at = text.indexOf(existing);
+        if (at >= 0 && at < end)
+            text.replace(at, text.indexOf('\n', at) - at, line);
+        else
+            text.insert(4, line + "\n");
+    } else {
+        text.prepend("---\n" + line + "\n---\n");
     }
-    const bool edited = n.title != before.title || n.body != before.body || n.system != before.system
-                     || n.tags != before.tags || n.location != before.location;
-    if (!edited && n.pinned == before.pinned)
-        return;
-    // Pinning alone shouldn't bump a note to "just edited".
-    if (edited)
-        n.updated = QDateTime::currentDateTimeUtc();
-    write(n);
-    refreshSystems();
-    refresh();
+    QSaveFile out(f.fileName());
+    if (out.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        out.write(text.toUtf8());
+        out.commit();
+    }
+    scan();
 }
 
 void NotesModel::remove(const QString &id)
 {
-    const int i = find(id);
-    if (i < 0)
+    if (find(id) < 0)
         return;
-    // Move to a trash folder rather than deleting outright.
-    QDir().mkpath(m_dir + "/.trash");
-    QFile::remove(m_dir + "/.trash/" + id + ".md");
-    QFile::rename(m_dir + "/" + id + ".md", m_dir + "/.trash/" + id + ".md");
-    beginResetModel();
-    m_all.removeAt(i);
-    m_visible.clear();
-    endResetModel();
-    refreshSystems();
-    refresh();
+    QDir().mkpath(m_root + "/.trash");
+    const QString dest = m_root + "/.trash/" + QString(id).replace('/', "__");
+    QFile::remove(dest);
+    QFile::rename(absPath(id), dest);
+    scan();
 }
 
 int NotesModel::countFor(const QString &system) const
@@ -433,130 +451,122 @@ int NotesModel::countFor(const QString &system) const
     return int(std::count_if(m_all.begin(), m_all.end(), [&](const Note &n) { return n.system == system; }));
 }
 
-int NotesModel::indexOf(const QString &id) const
-{
-    for (int r = 0; r < m_visible.size(); ++r)
-        if (m_all[m_visible[r]].id == id)
-            return r;
-    return -1;
-}
-
-QStringList NotesModel::allTags() const
-{
-    QStringList out;
-    for (const Note &n : m_all)
-        for (const QString &t : n.tags)
-            if (!out.contains(t, Qt::CaseInsensitive)) out << t;
-    out.sort(Qt::CaseInsensitive);
-    return out;
-}
-
 int NotesModel::countForLocation(const QString &location) const
 {
-    if (location.isEmpty())
-        return m_all.size();
     return int(std::count_if(m_all.begin(), m_all.end(), [&](const Note &n) { return inLocation(n, location); }));
 }
 
+int NotesModel::indexOf(const QString &id) const
+{
+    return int(m_visibleIds.indexOf(id));
+}
+
+QString NotesModel::idAt(int row) const
+{
+    return row >= 0 && row < m_visibleIds.size() ? m_visibleIds[row] : QString();
+}
+
 // ---- spots ---------------------------------------------------------------
-//
-// Kept in spots.json next to the notes:
-// [{ "id": "spot-…", "name": "Raw water strainer", "view": "below", "x": 4.1, "y": 0.2, "zone": "engine" }]
-
-void NotesModel::loadSpots()
-{
-    QFile f(m_dir + "/spots.json");
-    if (!f.open(QIODevice::ReadOnly))
-        return;
-    const QJsonArray arr = QJsonDocument::fromJson(f.readAll()).array();
-    for (const QJsonValue &v : arr) {
-        const QJsonObject o = v.toObject();
-        Spot sp;
-        sp.id = o.value("id").toString();
-        sp.name = o.value("name").toString();
-        sp.view = o.value("view").toString();
-        sp.zone = o.value("zone").toString();
-        sp.x = o.value("x").toDouble();
-        sp.y = o.value("y").toDouble();
-        if (!sp.id.isEmpty())
-            m_spots.append(sp);
-    }
-}
-
-void NotesModel::saveSpots() const
-{
-    QJsonArray arr;
-    for (const Spot &sp : m_spots)
-        arr.append(QJsonObject{{"id", sp.id}, {"name", sp.name}, {"view", sp.view},
-                               {"x", sp.x}, {"y", sp.y}, {"zone", sp.zone}});
-    QSaveFile f(m_dir + "/spots.json");
-    if (f.open(QIODevice::WriteOnly)) {
-        f.write(QJsonDocument(arr).toJson());
-        f.commit();
-    }
-}
 
 QVariantList NotesModel::spots() const
 {
     QVariantList out;
     for (const Spot &sp : m_spots)
-        out.append(QVariantMap{{"spotId", sp.id}, {"name", sp.name}, {"view", sp.view},
-                               {"x", sp.x}, {"y", sp.y}, {"zone", sp.zone}});
+        out.append(QVariantMap{{"spotId", sp.id}, {"name", sp.name}, {"view", sp.view}, {"zone", sp.zone},
+                               {"x", sp.x}, {"y", sp.y}, {"placed", sp.placed}});
     return out;
+}
+
+static void writePlace(const QString &dir, double x, double y)
+{
+    QSaveFile f(dir + "/.place.json");
+    if (f.open(QIODevice::WriteOnly)) {
+        f.write(QJsonDocument(QJsonObject{{"x", x}, {"y", y}}).toJson(QJsonDocument::Compact) + "\n");
+        f.commit();
+    }
 }
 
 QString NotesModel::addSpot(const QVariantMap &fields)
 {
-    Spot sp;
-    sp.id = "spot-" + QDateTime::currentDateTimeUtc().toString("yyyyMMddHHmmss")
-          + QString::number(QRandomGenerator::global()->bounded(0x10000), 16).rightJustified(4, '0');
-    sp.name = fields.value("name").toString().trimmed();
-    if (sp.name.isEmpty()) sp.name = tr("Spot");
-    sp.view = fields.value("view").toString();
-    sp.zone = fields.value("zone").toString();
-    sp.x = fields.value("x").toDouble();
-    sp.y = fields.value("y").toDouble();
-    m_spots.append(sp);
-    saveSpots();
-    emit spotsChanged();
-    return sp.id;
+    const QString zone = fields.value("zone").toString();
+    if (zone.count('/') != 1)
+        return {};
+    QString stem = slug(fields.value("name").toString());
+    if (stem.isEmpty()) stem = QStringLiteral("spot");
+    const QString rel = uniquePath(zone, stem, QString());
+    QDir().mkpath(m_root + "/" + rel);
+    writePlace(m_root + "/" + rel, fields.value("x").toDouble(), fields.value("y").toDouble());
+    scan();
+    return rel;
 }
 
-void NotesModel::updateSpot(const QString &id, const QVariantMap &fields)
+void NotesModel::placeSpot(const QString &id, double x, double y)
 {
-    for (Spot &sp : m_spots) {
-        if (sp.id != id) continue;
-        if (fields.contains("name") && !fields.value("name").toString().trimmed().isEmpty())
-            sp.name = fields.value("name").toString().trimmed();
-        if (fields.contains("x")) sp.x = fields.value("x").toDouble();
-        if (fields.contains("y")) sp.y = fields.value("y").toDouble();
-        const bool zoneMoved = fields.contains("zone") && fields.value("zone").toString() != sp.zone;
-        if (fields.contains("zone")) sp.zone = fields.value("zone").toString();
-        saveSpots();
-        emit spotsChanged();
-        if (zoneMoved) refresh(); // zone filters and counts include spot notes
+    if (!isFolder(id))
         return;
+    writePlace(m_root + "/" + id, x, y);
+    scan();
+}
+
+QString NotesModel::renameSpot(const QString &id, const QString &name)
+{
+    const QString stem = slug(name);
+    if (stem.isEmpty() || !isFolder(id))
+        return id;
+    const QString parent = id.section('/', 0, -2);
+    if (stem == id.section('/', -1))
+        return id;
+    const QString rel = uniquePath(parent, stem, QString());
+    if (!QDir(m_root).rename(id, rel))
+        return id;
+    if (m_locationFilter == id || m_locationFilter.startsWith(id + "/")) {
+        m_locationFilter = rel + m_locationFilter.mid(id.size());
+        emit filterChanged();
     }
+    scan();
+    return rel;
 }
 
 void NotesModel::removeSpot(const QString &id)
 {
-    const auto it = std::find_if(m_spots.begin(), m_spots.end(), [&](const Spot &s) { return s.id == id; });
-    if (it == m_spots.end())
+    if (!isFolder(id) || id.count('/') < 2)
         return;
-    const QString zone = it->zone;
-    m_spots.erase(it);
-    for (Note &n : m_all) {
-        if (n.location == id) {
-            n.location = zone;
-            write(n);
+    const QString parent = id.section('/', 0, -2);
+    QDir dir(m_root + "/" + id);
+    for (const QFileInfo &fi : dir.entryInfoList(QDir::Dirs | QDir::Files | QDir::NoDotAndDotDot | QDir::Hidden)) {
+        if (fi.fileName() == ".place.json") {
+            QFile::remove(fi.absoluteFilePath());
+            continue;
         }
+        const QString target = m_root + "/" + uniquePath(parent, fi.completeBaseName(), fi.isDir() ? QString() : "." + fi.suffix());
+        QFile::rename(fi.absoluteFilePath(), target);
     }
-    saveSpots();
-    if (m_locationFilter == id) {
-        m_locationFilter = zone;
+    QDir(m_root).rmdir(id);
+    if (m_locationFilter == id || m_locationFilter.startsWith(id + "/")) {
+        m_locationFilter = parent;
         emit filterChanged();
     }
-    emit spotsChanged();
-    refresh();
+    scan();
+}
+
+// ---- paths ---------------------------------------------------------------
+
+QString NotesModel::absPath(const QString &rel) const
+{
+    return rel.isEmpty() ? m_root : m_root + "/" + rel;
+}
+
+QString NotesModel::relPath(const QString &abs) const
+{
+    const QString p = QDir::cleanPath(abs);
+    if (p == m_root)
+        return QStringLiteral(".");
+    if (!p.startsWith(m_root + "/"))
+        return {};
+    return p.mid(m_root.size() + 1);
+}
+
+bool NotesModel::isFolder(const QString &rel) const
+{
+    return QFileInfo(absPath(rel)).isDir();
 }

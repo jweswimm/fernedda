@@ -10,6 +10,9 @@ Rectangle {
     property color accent: Theme.accent
     property bool compact: false
     signal clicked()
+    // Hint mode (f) labels every visible chip.
+    readonly property bool hintable: true
+    function hintActivate() { clicked() }
 
     implicitHeight: compact ? 24 : 30
     implicitWidth: row.implicitWidth + (compact ? 16 : 22)

@@ -24,6 +24,8 @@ qt_add_qml_module(fernedda
     src/Simulator.cpp src/Simulator.h
     src/HistoryPlot.cpp src/HistoryPlot.h
     src/NotesModel.cpp src/NotesModel.h
+    src/NvimLink.cpp src/NvimLink.h
+    src/KeyRouter.cpp src/KeyRouter.h
   QML_FILES
     qml/Main.qml
     qml/Theme.qml
@@ -50,6 +52,8 @@ qt_add_qml_module(fernedda
 )
 
 target_include_directories(fernedda PRIVATE src)
+# The boat folder and the Neovim module live in the source tree.
+target_compile_definitions(fernedda PRIVATE FERNEDDA_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 target_link_libraries(fernedda PRIVATE Qt6::Quick Qt6::QuickControls2 Qt6::Network Qt6::WebSockets)
 
 # Install for the current user (~/.local) unless a prefix is given.

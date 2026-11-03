@@ -73,6 +73,8 @@ Rectangle {
                 }
                 HoverHandler { id: hh; cursorShape: Qt.PointingHandCursor }
                 TapHandler { onTapped: rail.selected(item.index) }
+                readonly property bool hintable: true
+                function hintActivate() { rail.selected(item.index) }
             }
         }
     }

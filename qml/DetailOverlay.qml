@@ -113,6 +113,8 @@ Item {
                     Icon { anchors.centerIn: parent; name: "close"; size: 16; color: Theme.textDim }
                     HoverHandler { id: closeHover; cursorShape: Qt.PointingHandCursor }
                     TapHandler { onTapped: overlay.close() }
+                    readonly property bool hintable: true
+                    function hintActivate() { overlay.close() }
                 }
             }
 
