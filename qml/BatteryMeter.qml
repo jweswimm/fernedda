@@ -40,7 +40,7 @@ Item {
         gradient: Gradient {
             orientation: Gradient.Horizontal
             GradientStop { position: 0; color: "transparent" }
-            GradientStop { position: 0.5; color: Qt.rgba(1, 1, 1, Theme.dark ? 0.3 : 0.6) }
+            GradientStop { position: 0.5; color: Theme.alpha(Theme.dark ? Theme.text : Theme.surface, Theme.dark ? 0.3 : 0.6) }
             GradientStop { position: 1; color: "transparent" }
         }
         NumberAnimation on x {

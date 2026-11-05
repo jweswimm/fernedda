@@ -1,6 +1,5 @@
 import QtQuick
 import QtQuick.Window
-import QtQuick.Shapes
 import QtCore
 import Fernedda
 
@@ -41,46 +40,6 @@ Window {
     Shortcut { sequence: "Ctrl+3"; onActivated: window.pageIndex = 2 }
     Shortcut { sequence: "Ctrl+4"; onActivated: window.pageIndex = 3 }
     Shortcut { sequence: "F11"; onActivated: window.visibility = window.visibility === Window.FullScreen ? Window.Windowed : Window.FullScreen }
-
-    // ---- Background: gradient plus two slow, drifting glows -------------
-    Rectangle {
-        anchors.fill: parent
-        gradient: Gradient {
-            GradientStop { position: 0; color: Theme.bg2 }
-            GradientStop { position: 1; color: Theme.bg }
-        }
-    }
-    Shape {
-        id: glows
-        anchors.fill: parent
-        property real t: 0
-        NumberAnimation on t { from: 0; to: Math.PI * 2; duration: 60000; loops: Animation.Infinite }
-        readonly property real ax: width * (0.78 + 0.08 * Math.cos(t))
-        readonly property real ay: height * (0.12 + 0.08 * Math.sin(t))
-        readonly property real bx: width * (0.18 + 0.1 * Math.sin(t))
-        readonly property real by: height * (0.95 + 0.05 * Math.cos(t))
-        readonly property real rad: Math.max(width, height) * 0.55
-        ShapePath {
-            strokeColor: "transparent"
-            fillGradient: RadialGradient {
-                centerX: glows.ax; centerY: glows.ay; centerRadius: glows.rad
-                focalX: centerX; focalY: centerY
-                GradientStop { position: 0; color: Theme.alpha(Theme.glowA, 0.9) }
-                GradientStop { position: 1; color: "transparent" }
-            }
-            PathRectangle { x: 0; y: 0; width: glows.width; height: glows.height }
-        }
-        ShapePath {
-            strokeColor: "transparent"
-            fillGradient: RadialGradient {
-                centerX: glows.bx; centerY: glows.by; centerRadius: glows.rad * 0.8
-                focalX: centerX; focalY: centerY
-                GradientStop { position: 0; color: Theme.alpha(Theme.glowB, 0.7) }
-                GradientStop { position: 1; color: "transparent" }
-            }
-            PathRectangle { x: 0; y: 0; width: glows.width; height: glows.height }
-        }
-    }
 
     // ---- Chrome ----------------------------------------------------------
     NavRail {
@@ -188,7 +147,7 @@ Window {
             anchors.centerIn: parent
             text: hints.active ? qsTr("-- HINT --  %1").arg(hints.typed)
                   : Keyboard.insertMode ? qsTr("-- INSERT --  Esc to leave")
-                  : Keyboard.editorMode ? qsTr("-- NEOVIM --  Ctrl+; to leave") : window.pending
+                  : Keyboard.editorMode ? qsTr("-- NEOVIM --  Alt+Tab to leave") : window.pending
             color: Keyboard.insertMode ? Theme.good : Theme.accent
             font.family: Theme.monoFamily
             font.pixelSize: 12
@@ -318,7 +277,7 @@ Window {
         readonly property var globalKeys: [
             ["f", qsTr("hints: type a label to click it")], ["?", qsTr("this help")],
             ["H / L", qsTr("previous / next page (views on Notes)")], ["Esc", qsTr("back / leave a text field")],
-            ["Ctrl+;", qsTr("switch between Neovim and the app")],
+            ["Alt+Tab", qsTr("switch between Neovim and the app (or Ctrl+;)")],
             ["Ctrl+T", qsTr("show / hide the Neovim pane")],
             ["Ctrl+1…4", qsTr("go to page")], ["F11", qsTr("full screen")]
         ]

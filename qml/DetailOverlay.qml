@@ -53,15 +53,6 @@ Item {
         // Swallow clicks so they don't reach the backdrop.
         TapHandler {}
 
-        Rectangle {
-            anchors { left: parent.left; right: parent.right; top: parent.top }
-            height: 160
-            gradient: Gradient {
-                GradientStop { position: 0; color: Theme.alpha(overlay.tone, 0.10) }
-                GradientStop { position: 1; color: "transparent" }
-            }
-        }
-
         ColumnLayout {
             id: contents
             anchors.fill: parent

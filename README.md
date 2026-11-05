@@ -11,7 +11,7 @@ Native Qt 6 / QML, made for a laptop now and a Raspberry Pi screen later.
   of the boat for its **Documentation**, **Plans** and **Research** folders (`boat/below/engine/Plans/`);
   picking one, and creating it if it's missing, opens it in Neovim beside the drawing.
   *Insert readings* stamps engine hours, battery and position into the file you're editing.
-- **Night / red night-vision / day** themes (top-right button). F11 toggles full screen.
+- **Night / red night-vision / day** themes (top-right button): gruvbox dark and light, plus red. F11 toggles full screen.
 
 With no server it runs a built-in **simulated boat**. Switch to a real server in Settings.
 
@@ -24,7 +24,7 @@ plugins, drawn by the app itself, so it needs no terminal or window manager. It'
 - pick a part of the boat in the app and oil moves to it (only while oil is showing; a file you're
   editing is left alone). Picking a category always opens its folder; the file you were editing stays open.
 
-`Ctrl+;` moves the keyboard between the pane and the app. Drag the gap beside the pane to resize it;
+`Alt+Tab` or `Ctrl+;` moves the keyboard between the pane and the app. Drag the gap beside the pane to resize it;
 `Ctrl+T` shows or hides it, from anywhere. Neovim closes with the app: if files are unsaved it asks first, in the pane, and Cancel
 keeps everything open. (Closing the window again while it's asking stops Neovim; recover from its swap files.)
 
@@ -37,7 +37,7 @@ The boat folder is `boat/` in this repo; set `FERNEDDA_BOAT_DIR` to use another.
 Vim-style normal mode everywhere; typing in a text field is insert mode (Esc leaves it).
 
 - `f` — hints: every clickable thing (and every part of the boat) gets a label; type it to click
-- `?` — all keys · `H` / `L` — previous / next page (views on Notes) · `Ctrl+;` — switch between Neovim and the app · `Ctrl+T` — show / hide Neovim
+- `?` — all keys · `H` / `L` — previous / next page (views on Notes) · `Alt+Tab` or `Ctrl+;` — switch between Neovim and the app · `Ctrl+T` — show / hide Neovim
 - Notes: `h` `j` `k` `l` move to the part of the boat left / below / above / right ·
   `Enter` show / hide its folders, then `d` `p` `r` open Documentation / Plans / Research ·
   `Space` `h` or `-` back / up a folder, out to the whole boat · `1` `2` `3`, `H` `L` or `gT` `gt` views · `z` zoom on / off ·

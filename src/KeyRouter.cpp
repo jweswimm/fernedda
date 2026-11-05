@@ -71,9 +71,13 @@ bool KeyRouter::eventFilter(QObject *obj, QEvent *event)
         return QObject::eventFilter(obj, event);
     auto *ke = static_cast<QKeyEvent *>(event);
 
-    if (ke->modifiers() == Qt::ControlModifier && (ke->key() == Qt::Key_Semicolon || ke->key() == Qt::Key_T)) {
+    const bool ctrl = ke->modifiers() == Qt::ControlModifier;
+    const bool toggle = ctrl && ke->key() == Qt::Key_T;
+    const bool swap = (ctrl && ke->key() == Qt::Key_Semicolon)
+        || (ke->modifiers() == Qt::AltModifier && ke->key() == Qt::Key_Tab);
+    if (toggle || swap) {
         if (!focusIsText()) {     // not while typing in a field or a prompt
-            if (ke->key() == Qt::Key_T)
+            if (toggle)
                 emit togglePane();
             else
                 emit switchPane();

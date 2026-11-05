@@ -55,13 +55,6 @@ Item {
         border.color: hover.hovered && card.interactive ? Theme.alpha(card.accent, 0.55) : Theme.border
         Behavior on border.color { ColorAnimation { duration: Theme.fast } }
 
-        // Accent wash in the top corner, stronger on hover.
-        gradient: Gradient {
-            orientation: Gradient.Vertical
-            GradientStop { position: 0; color: Qt.tint(Theme.surface, Theme.alpha(card.accent, hover.hovered && card.interactive ? 0.10 : 0.05)) }
-            GradientStop { position: 0.5; color: Theme.surface }
-        }
-
         scale: tap.pressed && card.interactive ? 0.985 : 1
         Behavior on scale { NumberAnimation { duration: Theme.fast; easing.type: Easing.OutCubic } }
     }

@@ -264,7 +264,10 @@ Page {
         anchors.bottomMargin: 16
         radius: Theme.radius
         color: Theme.surface
-        border.color: Theme.border
+        // Marks where the keyboard is, like the Neovim pane; pointless with one pane.
+        readonly property bool active: page.paneShown && !nvimView.activeFocus
+        border.width: active ? 2 : 1
+        border.color: active ? Theme.accent : Theme.border
 
         RowLayout {
             id: boatBar

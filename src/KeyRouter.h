@@ -16,9 +16,10 @@ class QJSEngine;
 // uses it calls accept(), and the key goes no further. Keys with Ctrl/Alt/Super
 // always pass through, so existing shortcuts keep working.
 //
-// Editor mode: the Neovim pane has focus and gets every key, except two the app
-// always keeps: Ctrl+; switches between the pane and the app (switchPane()), and
-// Ctrl+T shows or hides the pane (togglePane()), so Neovim never sees Ctrl+T.
+// Editor mode: the Neovim pane has focus and gets every key, except those the app
+// always keeps: Alt+Tab or Ctrl+; switches between the pane and the app
+// (switchPane()), and Ctrl+T shows or hides the pane (togglePane()), so Neovim
+// never sees them.
 //
 // Exposed to QML as the `Keyboard` singleton; Main.qml calls attach(window).
 class KeyRouter : public QObject {

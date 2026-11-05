@@ -109,7 +109,7 @@ private:
     int m_window = 600;
     double m_scale = 1, m_offset = 0;
     bool m_angle = false;
-    QColor m_color{"#4fd1c5"}, m_grid{"#22ffffff"}, m_text{"#99ffffff"}, m_surface{"#101a2b"};
+    QColor m_color{"#fabd2f"}, m_grid{"#22ebdbb2"}, m_text{"#99ebdbb2"}, m_surface{"#3c3836"};
     bool m_axes = true;
     double m_lineWidth = 2;
     double m_fillOpacity = 0.35;

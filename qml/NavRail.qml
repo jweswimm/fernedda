@@ -28,7 +28,7 @@ Rectangle {
             radius: 14
             gradient: Gradient {
                 GradientStop { position: 0; color: Theme.accent }
-                GradientStop { position: 1; color: Theme.accent2 }
+                GradientStop { position: 1; color: Theme.warn }
             }
             opacity: 0.9
         }
