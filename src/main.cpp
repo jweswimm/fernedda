@@ -39,7 +39,7 @@ int main(int argc, char *argv[])
         });
     }
     // FERNEDDA_KEYS="J J f a": type these keys (space-separated; names like
-    // Escape or Return work too) from 1.5 s on, for testing the keyboard
+    // Escape, Return or Ctrl+; work too) from 1.5 s on, for testing the keyboard
     // without a display. Pairs well with FERNEDDA_SCREENSHOT.
     if (const QString keys = qEnvironmentVariable("FERNEDDA_KEYS"); !keys.isEmpty()) {
         int at = 1500;
@@ -48,9 +48,9 @@ int main(int argc, char *argv[])
                 auto *w = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
                 if (!w) return;
                 const bool single = tok.size() == 1;
-                const int code = single ? QKeySequence::fromString(tok.toUpper())[0].key()
-                                        : QKeySequence::fromString(tok)[0].key();
-                const auto mods = single && tok.at(0).isUpper() ? Qt::ShiftModifier : Qt::NoModifier;
+                const QKeyCombination combo = QKeySequence::fromString(single ? tok.toUpper() : tok)[0];
+                const int code = combo.key();
+                const auto mods = single && tok.at(0).isUpper() ? Qt::ShiftModifier : combo.keyboardModifiers();
                 QKeyEvent press(QEvent::KeyPress, code, mods, single ? tok : QString());
                 QKeyEvent release(QEvent::KeyRelease, code, mods, single ? tok : QString());
                 QCoreApplication::sendEvent(w, &press);

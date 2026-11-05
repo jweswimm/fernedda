@@ -161,8 +161,8 @@ Page {
                 RowLayout {
                     Layout.fillWidth: true
                     spacing: 10
-                    Text { Layout.fillWidth: true; text: Notes.root; elide: Text.ElideMiddle; color: Theme.text; font.family: Theme.monoFamily; font.pixelSize: 13 }
-                    Chip { text: qsTr("Open folder"); icon: "folder"; compact: true; onClicked: Qt.openUrlExternally("file://" + Notes.root) }
+                    Text { Layout.fillWidth: true; text: BoatFolder.root; elide: Text.ElideMiddle; color: Theme.text; font.family: Theme.monoFamily; font.pixelSize: 13 }
+                    Chip { text: qsTr("Open folder"); icon: "folder"; compact: true; onClicked: Qt.openUrlExternally("file://" + BoatFolder.root) }
                 }
             }
         }

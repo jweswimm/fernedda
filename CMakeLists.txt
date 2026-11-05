@@ -23,8 +23,10 @@ qt_add_qml_module(fernedda
     src/SignalKClient.cpp src/SignalKClient.h
     src/Simulator.cpp src/Simulator.h
     src/HistoryPlot.cpp src/HistoryPlot.h
-    src/NotesModel.cpp src/NotesModel.h
+    src/BoatFolder.cpp src/BoatFolder.h
+    src/Msgpack.cpp src/Msgpack.h
     src/NvimLink.cpp src/NvimLink.h
+    src/NvimView.cpp src/NvimView.h
     src/KeyRouter.cpp src/KeyRouter.h
   QML_FILES
     qml/Main.qml

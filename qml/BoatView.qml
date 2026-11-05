@@ -1,27 +1,74 @@
 import QtQuick
 import QtQuick.Shapes
-import QtQuick.Controls.Basic
 import Fernedda
 import "BoatS235C.js" as Boat
 
 // One view of the boat (outside / deck / below), scaled to fit. Parts of the
-// boat are tappable zones (folders boat/<view>/<zone>/); spots are pins for
-// the sub-folders inside a zone, and can be dragged.
+// boat are tappable zones (folders boat/<view>/<zone>/). `menuOpen` shows a
+// small menu on the selected zone with its category folders.
 //
-//   tap a zone or pin   → selected(folder path)
+//   tap a zone          → selected(folder path)
 //   tap empty water     → selected("")
-//   double-tap / long-press, or tap while `placing` → name a new spot there
+//   pick from the menu  → categoryChosen(name)
 Item {
     id: root
     property var view: Boat.views[0]
-    property string selection: ""       // folder path, e.g. "below/engine/strainer"
-    property bool placing: false
+    property string selection: ""       // folder path, e.g. "below/engine/Plans"
+    property bool menuOpen: false
     signal selected(string location)
-    signal spotCreated(string spotId)
+    signal categoryChosen(string name)
+    // The folders every part of the boat can have, and the keys that pick them.
+    readonly property var categories: [
+        { name: "Documentation", key: "d", icon: "note" },
+        { name: "Plans", key: "p", icon: "list" },
+        { name: "Research", key: "r", icon: "search" }
+    ]
     clip: true
 
     readonly property real pad: 18
-    readonly property var b: view.bounds
+    property bool zoom: true                // zoom into the selected part of the boat
+
+    // Camera: the rectangle of the view (metres) fitted to the screen. It
+    // eases in to the selected zone and back out to the whole view; switching
+    // views snaps. Everything is re-projected from it, so lines stay crisp.
+    readonly property var target: {
+        const z = selectedZone ? Boat.zoneByPath[selectedZone] : null
+        const vb = view.bounds
+        if (!zoom || !z || z.view !== view.id) return vb
+        const bb = z.bbox
+        const vw = vb[2] - vb[0], vh = vb[3] - vb[1]
+        // Leave room around the part, and don't zoom in past ~2.5× (keep some context).
+        const w = Math.min(vw, Math.max((bb[2] - bb[0]) * 1.8, vw * 0.4))
+        const h = Math.min(vh, Math.max((bb[3] - bb[1]) * 1.8, vh * 0.4))
+        const cx = (bb[0] + bb[2]) / 2, cy = (bb[1] + bb[3]) / 2
+        return [cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2]
+    }
+    readonly property bool zoomed: target !== view.bounds
+    property real c0: 0
+    property real c1: 0
+    property real c2: 1
+    property real c3: 1
+    property string camView: ""
+    function aim() {
+        const t = target
+        const smooth = camView === view.id
+        camView = view.id
+        camAnim.stop()
+        if (!smooth) { c0 = t[0]; c1 = t[1]; c2 = t[2]; c3 = t[3]; return }
+        a0.to = t[0]; a1.to = t[1]; a2.to = t[2]; a3.to = t[3]
+        camAnim.start()
+    }
+    onTargetChanged: aim()
+    Component.onCompleted: aim()
+    ParallelAnimation {
+        id: camAnim
+        NumberAnimation { id: a0; target: root; property: "c0"; duration: 520; easing.type: Easing.InOutCubic }
+        NumberAnimation { id: a1; target: root; property: "c1"; duration: 520; easing.type: Easing.InOutCubic }
+        NumberAnimation { id: a2; target: root; property: "c2"; duration: 520; easing.type: Easing.InOutCubic }
+        NumberAnimation { id: a3; target: root; property: "c3"; duration: 520; easing.type: Easing.InOutCubic }
+    }
+
+    readonly property var b: [c0, c1, c2, c3]
     readonly property real s: Math.max(1, Math.min((width - 2 * pad) / (b[2] - b[0]), (height - 2 * pad - 28) / (b[3] - b[1])))
     readonly property real ox: (width - (b[2] - b[0]) * s) / 2 - b[0] * s
     readonly property real oy: (height - 28 - (b[3] - b[1]) * s) / 2 + b[3] * s
@@ -29,61 +76,44 @@ Item {
     function py(y) { return oy - y * s }
     function toBoat(p) { return [(p.x - ox) / s, (oy - p.y) / s] }
 
-    // The zone and spot folders the selection is in (or "").
+    // The zone folder the selection is in (or "").
     readonly property var selParts: selection ? selection.split("/") : []
     readonly property string selectedZone: selParts.length >= 2 && Boat.zoneByPath[selParts[0] + "/" + selParts[1]] ? selParts[0] + "/" + selParts[1] : ""
-    readonly property string selectedSpot: selParts.length >= 3 ? selParts.slice(0, 3).join("/") : ""
     property string hoverZone: ""
-    property string hoverSpot: ""
 
-    // Spots in this view. One without a saved place sits beside its zone's
-    // label until you drag it somewhere.
-    readonly property var spots: {
-        const out = []
-        let unplaced = 0
-        for (const sp of Notes.spots) {
-            if (sp.view !== view.id) continue
-            const z = Boat.zoneByPath[sp.zone]
-            if (sp.placed) out.push(sp)
-            else if (z) {
-                const k = unplaced++
-                out.push(Object.assign({}, sp, { x: z.at[0] + (28 + 30 * (k % 4)) / s, y: z.at[1] - (14 + 34 * Math.floor(k / 4)) / s }))
-            }
-        }
-        return out
-    }
-
-    // Things hint mode can label: every zone and spot in this view.
+    // Things hint mode can label: every zone in this view.
     function hintTargets() {
-        const out = []
-        for (const z of view.zones)
-            out.push({ item: root, x: px(z.at[0]), y: py(z.at[1]), activate: () => root.selected(z.path) })
-        for (const sp of spots)
-            out.push({ item: root, x: px(sp.x), y: py(sp.y) - 14, activate: () => root.selected(sp.spotId) })
-        return out
+        return view.zones.map(z => ({ item: root, x: px(z.at[0]), y: py(z.at[1]), activate: () => root.selected(z.path) }))
     }
 
-    function spotAt(p) {
-        let best = "", bd = 18
-        for (const sp of spots) {
-            const d = Math.hypot(px(sp.x) - p.x, py(sp.y) - p.y)
-            if (d < bd) { bd = d; best = sp.spotId }
+    // hjkl: the nearest part of this view in a direction
+    // ("h" left, "j" down, "k" up, "l" right), from the selected one — or
+    // from the middle of the view when nothing here is selected.
+    function neighbor(dir) {
+        const d = ({ h: [-1, 0], l: [1, 0], k: [0, 1], j: [0, -1] })[dir]
+        const places = view.zones.map(z => ({ path: z.path, x: z.at[0], y: z.at[1] }))
+        const here = places.find(q => q.path === selectedZone)
+        const vb = view.bounds
+        const p = here ? [here.x, here.y] : [(vb[0] + vb[2]) / 2, (vb[1] + vb[3]) / 2]
+        let best = null, bestScore = Infinity, loose = null, looseScore = Infinity
+        for (const q of places) {
+            if (here && q.path === here.path) continue
+            const vx = q.x - p[0], vy = q.y - p[1]
+            const along = vx * d[0] + vy * d[1]
+            const across = Math.abs(vx * d[1] - vy * d[0])
+            if (along <= 0.05) continue
+            const score = along + 2 * across            // straight ahead beats off to the side
+            if (along >= across * 0.5) { if (score < bestScore) { best = q; bestScore = score } }
+            else if (score < looseScore) { loose = q; looseScore = score }
         }
-        return best
+        const pick = best || loose
+        return pick ? pick.path : ""
     }
+
     function zoneAt(p) {
         const m = toBoat(p)
         const z = Boat.hit(view, m[0], m[1])
         return z ? z.path : ""
-    }
-
-    function startPlacing(p) {
-        const m = toBoat(p)
-        namer.boatPt = m
-        namer.zone = Boat.hit(view, m[0], m[1])
-        namer.x = Math.max(8, Math.min(width - namer.width - 8, p.x - namer.width / 2))
-        namer.y = p.y + 18 + namer.height > height ? p.y - namer.height - 18 : p.y + 18
-        namer.open()
     }
 
     // ---- art ---------------------------------------------------------------
@@ -150,7 +180,7 @@ Item {
                     fillColor: zoneShape.sel ? Theme.alpha(Theme.accent, 0.22 + 0.08 * pulse.v)
                              : zoneShape.hot ? Theme.alpha(Theme.accent, 0.14) : Theme.alpha(Theme.accent, 0)
                     strokeColor: zoneShape.sel ? Theme.accent : zoneShape.hot ? Theme.alpha(Theme.accent, 0.7)
-                               : Theme.alpha(Theme.accent, hover.hovered || root.placing ? 0.16 : 0)
+                               : Theme.alpha(Theme.accent, hover.hovered ? 0.16 : 0)
                     strokeWidth: zoneShape.sel ? 1.8 : 1.2
                     fillRule: ShapePath.WindingFill
                     joinStyle: ShapePath.RoundJoin
@@ -171,12 +201,12 @@ Item {
             }
         }
 
-        // Note counts per zone.
+        // File counts per zone.
         Repeater {
             model: root.view.zones
             Rectangle {
                 required property var modelData
-                readonly property int n: (Notes.revision, Notes.countForLocation(modelData.path))
+                readonly property int n: BoatFolder.revision >= 0 ? BoatFolder.fileCount(modelData.path) : 0
                 readonly property bool show: n > 0 && root.hoverZone !== modelData.path && root.selectedZone !== modelData.path
                 x: root.px(modelData.at[0]) - width / 2
                 y: root.py(modelData.at[1]) - height / 2
@@ -203,8 +233,8 @@ Item {
         // Label on the hovered / selected zone.
         Rectangle {
             id: zoneLabel
-            readonly property var zone: Boat.zoneByPath[root.hoverZone || (root.selectedSpot ? "" : root.selectedZone)]  // a selected spot labels itself
-            readonly property bool show: !!zone && zone.view === root.view.id && !root.hoverSpot
+            readonly property var zone: Boat.zoneByPath[root.hoverZone || root.selectedZone]
+            readonly property bool show: !!zone && zone.view === root.view.id && zone !== menu.zone  // the menu has its name
             visible: opacity > 0
             opacity: show ? 1 : 0
             Behavior on opacity { NumberAnimation { duration: Theme.fast } }
@@ -229,7 +259,7 @@ Item {
                     font.weight: Font.DemiBold
                 }
                 Text {
-                    readonly property int n: zoneLabel.zone ? (Notes.revision, Notes.countForLocation(zoneLabel.zone.path)) : 0
+                    readonly property int n: zoneLabel.zone && BoatFolder.revision >= 0 ? BoatFolder.fileCount(zoneLabel.zone.path) : 0
                     visible: n > 0
                     text: n
                     color: Theme.accent
@@ -240,155 +270,149 @@ Item {
             }
         }
 
-        // Spots: pins you can drag to a new place.
-        Repeater {
-            model: root.spots
-            Item {
-                id: pin
-                required property var modelData
-                readonly property bool sel: root.selectedSpot === modelData.spotId
-                readonly property bool hot: root.hoverSpot === modelData.spotId || drag.active
-                readonly property int n: (Notes.revision, Notes.countForLocation(modelData.spotId))
-                x: root.px(modelData.x) - 13
-                y: root.py(modelData.y) - 13
-                width: 26
-                height: 26
-                z: sel || hot ? 2 : 1
+    }
 
+    // ---- input -------------------------------------------------------------
+    HoverHandler {
+        id: hover
+        cursorShape: root.hoverZone ? Qt.PointingHandCursor : Qt.ArrowCursor
+        onPointChanged: {
+            const m = menu.mapFromItem(root, point.position)
+            root.hoverZone = menu.show && menu.contains(m) ? "" : root.zoneAt(point.position)
+        }
+        onHoveredChanged: if (!hovered) root.hoverZone = ""
+    }
+    TapHandler {
+        // Tapping the part you're in keeps you there (a double-click is just
+        // two taps); only empty water goes back to the whole boat.
+        onTapped: ev => root.selected(root.zoneAt(ev.position))
+    }
+
+    // ---- category menu -------------------------------------------------------
+    // Sits by the selected zone and follows it as the camera moves.
+    Rectangle {
+        id: menu
+        readonly property var zone: root.menuOpen ? Boat.zoneByPath[root.selectedZone] : null
+        readonly property bool show: !!zone && zone.view === root.view.id
+        z: 10
+        width: 250
+        height: menuCol.implicitHeight + 16
+        radius: 12
+        color: Theme.surfaceHi
+        border.color: Theme.alpha(Theme.accent, 0.6)
+        visible: opacity > 0
+        opacity: show ? 1 : 0
+        scale: show ? 1 : 0.95
+        Behavior on opacity { NumberAnimation { duration: 140 } }
+        Behavior on scale { NumberAnimation { duration: 200; easing.type: Easing.OutBack } }
+        x: show ? Math.max(8, Math.min(root.width - width - 8, root.px(zone.at[0]) - width / 2)) : x
+        y: {
+            if (!show) return y
+            const at = root.py(zone.at[1])
+            const below = at + 16
+            return below + height <= root.height - 8 ? below : Math.max(8, at - height - 16)
+        }
+        MouseArea { anchors.fill: parent }   // clicks here aren't clicks on the boat
+
+        Column {
+            id: menuCol
+            anchors { left: parent.left; right: parent.right; top: parent.top; margins: 8 }
+            spacing: 2
+            Text {
+                leftPadding: 8
+                bottomPadding: 4
+                text: menu.zone ? menu.zone.name : ""
+                color: Theme.text
+                font.family: Theme.fontFamily
+                font.pixelSize: 13
+                font.weight: Font.DemiBold
+            }
+            Repeater {
+                model: root.categories
                 Rectangle {
-                    anchors.centerIn: parent
-                    width: 26; height: 26; radius: 13
-                    color: pin.sel ? Theme.accent : Theme.surfaceHi
-                    border.color: pin.modelData.placed ? Theme.accent : Theme.warn
-                    border.width: 1.5
-                    opacity: pin.modelData.placed || pin.sel || pin.hot ? 1 : 0.75
-                    scale: pin.hot ? 1.18 : 1
-                    Behavior on scale { NumberAnimation { duration: Theme.fast; easing.type: Easing.OutBack } }
+                    id: menuRow
+                    required property var modelData
+                    readonly property string path: menu.zone ? menu.zone.path + "/" + modelData.name : ""
+                    readonly property bool exists: BoatFolder.revision >= 0 && !!path && BoatFolder.isFolder(path)
+                    readonly property int files: exists && BoatFolder.revision >= 0 ? BoatFolder.fileCount(path) : 0
+                    readonly property bool hintable: true
+                    function hintActivate() { root.categoryChosen(modelData.name) }
+                    width: menuCol.width
+                    height: 36
+                    radius: 8
+                    color: rowArea.containsMouse ? Theme.alpha(Theme.accent, 0.14) : "transparent"
                     Behavior on color { ColorAnimation { duration: Theme.fast } }
-                    Icon { anchors.centerIn: parent; name: "pin"; size: 14; stroke: 2; color: pin.sel ? Theme.bg : Theme.accent }
-                }
-                Rectangle { // count
-                    visible: pin.n > 0
-                    x: 17; y: -5
-                    width: Math.max(16, pinCount.implicitWidth + 8); height: 16; radius: 8
-                    color: Theme.warn
-                    Text { id: pinCount; anchors.centerIn: parent; text: pin.n; color: Theme.bg; font.family: Theme.fontFamily; font.pixelSize: 10; font.weight: Font.Bold }
-                }
-                Text {
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    y: 28
-                    text: pin.modelData.name + (pin.modelData.placed ? "" : qsTr(" · drag to place"))
-                    color: pin.sel || pin.hot ? Theme.text : Theme.textDim
-                    style: Text.Outline
-                    styleColor: Theme.bg
-                    font.family: Theme.fontFamily
-                    font.pixelSize: 11
-                    font.weight: pin.sel ? Font.DemiBold : Font.Normal
-                }
-                DragHandler {
-                    id: drag
-                    target: pin
-                    cursorShape: Qt.ClosedHandCursor
-                    onActiveChanged: if (!active) {
-                        const m = root.toBoat(Qt.point(pin.x + 13, pin.y + 13))
-                        Notes.placeSpot(pin.modelData.spotId, m[0], m[1])
+                    Row {
+                        anchors { left: parent.left; verticalCenter: parent.verticalCenter; leftMargin: 8 }
+                        spacing: 8
+                        Icon {
+                            anchors.verticalCenter: parent.verticalCenter
+                            name: menuRow.modelData.icon
+                            size: 15
+                            color: menuRow.exists ? Theme.accent : Theme.textFaint
+                        }
+                        Text {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: menuRow.modelData.name
+                            color: menuRow.exists ? Theme.text : Theme.textDim
+                            font.family: Theme.fontFamily
+                            font.pixelSize: 13
+                        }
+                    }
+                    Row {
+                        anchors { right: parent.right; verticalCenter: parent.verticalCenter; rightMargin: 8 }
+                        spacing: 8
+                        Icon {
+                            anchors.verticalCenter: parent.verticalCenter
+                            visible: !menuRow.exists
+                            name: "plus"
+                            size: 12
+                            color: Theme.accent
+                        }
+                        Text {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: !menuRow.exists ? qsTr("Create")
+                                : menuRow.files === 1 ? qsTr("1 file")
+                                : menuRow.files ? qsTr("%1 files").arg(menuRow.files) : qsTr("Empty")
+                            color: menuRow.exists ? Theme.textFaint : Theme.accent
+                            font.family: Theme.fontFamily
+                            font.pixelSize: 11
+                        }
+                        Text {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: menuRow.modelData.key
+                            color: Theme.textFaint
+                            font.family: Theme.monoFamily
+                            font.pixelSize: 12
+                        }
+                    }
+                    MouseArea {
+                        id: rowArea
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.categoryChosen(menuRow.modelData.name)
                     }
                 }
             }
         }
     }
 
-    // ---- input -------------------------------------------------------------
-    HoverHandler {
-        id: hover
-        cursorShape: root.placing ? Qt.CrossCursor : (root.hoverZone || root.hoverSpot) ? Qt.PointingHandCursor : Qt.ArrowCursor
-        onPointChanged: {
-            root.hoverSpot = root.spotAt(point.position)
-            root.hoverZone = root.hoverSpot ? "" : root.zoneAt(point.position)
-        }
-        onHoveredChanged: if (!hovered) { root.hoverZone = ""; root.hoverSpot = "" }
-    }
-    TapHandler {
-        onTapped: (ev) => {
-            if (namer.opened) { namer.close(); return }
-            if (root.placing) { root.startPlacing(ev.position); return }
-            const sp = root.spotAt(ev.position)
-            if (sp) { root.selected(sp); return }
-            const z = root.zoneAt(ev.position)
-            root.selected(z === root.selection ? "" : z)
-        }
-        onDoubleTapped: (ev) => { if (!root.spotAt(ev.position)) root.startPlacing(ev.position) }
-        onLongPressed: if (!root.spotAt(point.position)) root.startPlacing(point.position)
-    }
-
-    // ---- name a new spot -----------------------------------------------------
-    Popup {
-        id: namer
-        property var boatPt: [0, 0]
-        property var zone: null
-        width: 260
-        padding: 12
-        modal: false
-        focus: true
-        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutsideParent
-        onOpened: { nameField.text = ""; nameField.forceActiveFocus() }
-        onClosed: root.placing = false
-        background: Rectangle { color: Theme.surfaceHi; radius: 12; border.color: Theme.alpha(Theme.accent, 0.6) }
-        enter: Transition {
-            NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 140 }
-            NumberAnimation { property: "scale"; from: 0.94; to: 1; duration: 200; easing.type: Easing.OutBack }
-        }
-        function commit() {
-            if (!nameField.text.trim() || !zone) return
-            const id = Notes.addSpot({ name: nameField.text, zone: zone.path, x: boatPt[0], y: boatPt[1] })
-            close()
-            root.spotCreated(id)
-        }
-        contentItem: Column {
-            spacing: 8
-            Text {
-                text: namer.zone ? qsTr("New spot (folder) in %1").arg(namer.zone.name) : qsTr("Spots go inside a part of the boat — tap one")
-                wrapMode: Text.WordWrap
-                width: parent.width
-                color: Theme.textDim
-                font.family: Theme.fontFamily
-                font.pixelSize: 12
-            }
-            TextField {
-                id: nameField
-                visible: !!namer.zone
-                width: parent.width
-                placeholderText: qsTr("e.g. Raw water strainer")
-                placeholderTextColor: Theme.textFaint
-                color: Theme.text
-                font.family: Theme.fontFamily
-                font.pixelSize: 14
-                background: Rectangle { radius: 8; color: Theme.surface; border.color: nameField.activeFocus ? Theme.accent : Theme.border }
-                onAccepted: namer.commit()
-            }
-            Row {
-                spacing: 6
-                anchors.right: parent.right
-                Chip { text: qsTr("Cancel"); compact: true; onClicked: namer.close() }
-                Chip { visible: !!namer.zone; text: qsTr("Add spot"); icon: "pin"; compact: true; checked: true; onClicked: namer.commit() }
-            }
-        }
-    }
-
     // Orientation hints for the plan views.
     Text {
-        visible: root.view.id !== "outside"
+        visible: root.view.id !== "outside" && !root.zoomed
         x: root.px(root.b[0]) + 2; y: root.py(1.85) - 2
         text: qsTr("PORT"); color: Theme.port; opacity: 0.7
         font.family: Theme.fontFamily; font.pixelSize: 10; font.letterSpacing: 1.4
     }
     Text {
-        visible: root.view.id !== "outside"
+        visible: root.view.id !== "outside" && !root.zoomed
         x: root.px(root.b[0]) + 2; y: root.py(-1.85) - height + 2
         text: qsTr("STBD"); color: Theme.starboard; opacity: 0.7
         font.family: Theme.fontFamily; font.pixelSize: 10; font.letterSpacing: 1.4
     }
     Text {
+        visible: !root.zoomed
         x: root.px(root.b[2]) - width - 2
         y: root.view.id === "outside" ? root.py(0) - height - 4 : root.py(1.85) - 2
         text: qsTr("BOW ›"); color: Theme.textFaint

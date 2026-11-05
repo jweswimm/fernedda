@@ -1,23 +1,20 @@
 #pragma once
 
-#include <QLocalServer>
 #include <QObject>
+#include <QProcess>
+#include <QStringList>
+#include <QVariantList>
 #include <QtQml/qqmlregistration.h>
 
 class QQmlEngine;
 class QJSEngine;
 
-// Two-way link with a Neovim running in a terminal beside the app.
+// The app's Neovim: a child process (`nvim --embed`) spoken to with msgpack-RPC
+// over its stdin/stdout. NvimView draws what it sends and feeds it keys.
 //
 //   nvim → app  nvim/lua/fernedda.lua reports the path under the cursor in oil
-//               (or the file being edited) over $XDG_RUNTIME_DIR/fernedda.sock,
-//               one line per move: "focus\t/abs/path". → focused(path)
-//   app → nvim  `nvim --server <sock> --remote-expr` calls into the same Lua
-//               module (goto / edit / insert). Arguments travel base64-encoded.
-//
-// launch() opens the terminal (alacritty by default, or $FERNEDDA_TERMINAL)
-// running nvim on the boat folder with the module loaded; sway tiles it
-// beside the app.
+//               (or the file being edited) with rpcnotify. → focused(path)
+//   app → nvim  reveal / openFolder / insert call into the same Lua module.
 //
 // Exposed to QML as the `Nvim` singleton.
 class NvimLink : public QObject {
@@ -27,33 +24,51 @@ class NvimLink : public QObject {
     Q_PROPERTY(bool running READ running NOTIFY runningChanged)
 
 public:
+    static NvimLink *instance();
     static NvimLink *create(QQmlEngine *, QJSEngine *);
 
     bool running() const { return m_running; }
 
-    // Open the terminal, or focus it if it's already up.
+    // Start nvim on the boat folder, unless it's already up.
     Q_INVOKABLE void launch(const QString &root);
-    Q_INVOKABLE void focusTerminal();
-    // Show a folder in oil with the cursor on it (or open a file) — keeps focus here.
+    // Show a folder in oil with the cursor on it (or open a file).
     Q_INVOKABLE void reveal(const QString &absPath);
-    // Open a file for editing and move keyboard focus to the terminal.
-    Q_INVOKABLE void edit(const QString &absPath);
+    // Open a folder in oil, even from a note being edited (which stays open).
+    Q_INVOKABLE void openFolder(const QString &absPath);
     // Put Markdown lines below the cursor in the note being edited.
     Q_INVOKABLE void insert(const QString &text);
+    // The window wants to close. True: go ahead. False: nvim is quitting first
+    // (it asks about unsaved notes) and the app quits when it has. A second
+    // close while that's pending stops nvim, leaving its swap files to recover.
+    Q_INVOKABLE bool requestQuit();
+
+    // For NvimView.
+    void resizeUi(int cols, int rows);
+    void input(const QString &keys);
+    void inputMouse(const QString &button, const QString &action, const QString &mods, int row, int col);
+    void setUiFocus(bool focused);
 
 signals:
     void focused(const QString &absPath);
     void runningChanged();
+    void attention();                       // nvim is asking something: show it
+    void redraw(const QVariantList &events);
+    void transparentChanged(bool transparent);  // the colorscheme sets no background
 
 private:
     explicit NvimLink(QObject *parent = nullptr);
-    void onConnection();
+    void onOutput();
+    void onFinished();
+    void onMessage(const QVariantList &message);
+    void notify(const QString &method, const QVariantList &params);
     void call(const QString &fn, const QString &arg);
-    void check();
 
-    QLocalServer m_server;
-    QString m_pendingEdit;   // opened once a just-launched nvim is listening
-    int m_waits = 0;
-    QString m_appSock, m_nvimSock;
+    QProcess m_process;
+    QByteArray m_buffer;       // output not yet decoded
+    QStringList m_queue;       // Lua calls waiting for the module to load
+    int m_cols = 80, m_rows = 24;
     bool m_running = false;
+    bool m_attached = false;
+    bool m_ready = false;      // the Lua module has loaded
+    bool m_quitting = false;
 };

@@ -35,6 +35,12 @@ bool KeyRouter::focusIsText() const
         && !item->property("readOnly").toBool();
 }
 
+bool KeyRouter::focusIsEditor() const
+{
+    const QQuickItem *item = m_window ? m_window->activeFocusItem() : nullptr;
+    return item && item->inherits("NvimView");
+}
+
 void KeyRouter::updateMode()
 {
     const bool insert = focusIsText();
@@ -42,12 +48,21 @@ void KeyRouter::updateMode()
         m_insert = insert;
         emit insertModeChanged();
     }
+    const bool editor = focusIsEditor();
+    if (editor != m_editor) {
+        m_editor = editor;
+        emit editorModeChanged();
+    }
 }
 
 void KeyRouter::release()
 {
-    if (m_window && m_window->contentItem())
-        m_window->contentItem()->forceActiveFocus();
+    if (!m_window || !m_window->contentItem())
+        return;
+    // Focusing the root alone hands focus back to whichever item last had it.
+    if (QQuickItem *item = m_window->activeFocusItem())
+        item->setFocus(false);
+    m_window->contentItem()->forceActiveFocus();
 }
 
 bool KeyRouter::eventFilter(QObject *obj, QEvent *event)
@@ -55,6 +70,18 @@ bool KeyRouter::eventFilter(QObject *obj, QEvent *event)
     if (event->type() != QEvent::KeyPress || obj != m_window)
         return QObject::eventFilter(obj, event);
     auto *ke = static_cast<QKeyEvent *>(event);
+
+    if (ke->modifiers() == Qt::ControlModifier && (ke->key() == Qt::Key_Semicolon || ke->key() == Qt::Key_T)) {
+        if (!focusIsText()) {     // not while typing in a field or a prompt
+            if (ke->key() == Qt::Key_T)
+                emit togglePane();
+            else
+                emit switchPane();
+        }
+        return true;
+    }
+    if (focusIsEditor())
+        return false;
 
     if (focusIsText()) {
         // Let the field (or its popup) see Escape first, then leave the field.

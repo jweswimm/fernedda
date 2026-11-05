@@ -446,8 +446,15 @@ function inside(pt, polygon) {
     return c
 }
 
+// Polygons for hit-testing, and each zone's bounding box [x0, y0, x1, y1] for zooming.
 for (const v of views)
-    for (const z of v.zones) z.polys = polygons(z.d)
+    for (const z of v.zones) {
+        z.polys = polygons(z.d)
+        let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity
+        for (const p of z.polys)
+            for (const q of p) { x0 = Math.min(x0, q[0]); y0 = Math.min(y0, q[1]); x1 = Math.max(x1, q[0]); y1 = Math.max(y1, q[1]) }
+        z.bbox = [x0, y0, x1, y1]
+    }
 
 // Topmost zone at a point in view coordinates, or null.
 function hit(view, x, y) {
@@ -458,15 +465,21 @@ function hit(view, x, y) {
     return null
 }
 
-// Map a path string to pixels: x' = ox + x*s, y' = oy - y*s.
+// Map a path string to pixels: x' = ox + x*s, y' = oy - y*s. Paths are
+// tokenised once and cached, so re-projecting every frame of a zoom is cheap.
+var tokens = {}
 function project(d, s, ox, oy) {
-    const tok = d.trim().split(/[\s,]+/)
-    const out = []
+    let t = tokens[d]
+    if (!t) {
+        t = d.trim().split(/[\s,]+/).map(x => /^[A-Za-z]$/.test(x) ? x : parseFloat(x))
+        tokens[d] = t
+    }
+    const out = new Array(t.length)
     let expectX = true
-    for (const t of tok) {
-        if (/^[A-Za-z]$/.test(t)) { out.push(t); expectX = true; continue }
-        const v = parseFloat(t)
-        out.push(expectX ? (ox + v * s).toFixed(1) : (oy - v * s).toFixed(1))
+    for (let i = 0; i < t.length; ++i) {
+        const v = t[i]
+        if (typeof v === "string") { out[i] = v; expectX = true; continue }
+        out[i] = expectX ? (ox + v * s).toFixed(1) : (oy - v * s).toFixed(1)
         expectX = !expectX
     }
     return out.join(" ")

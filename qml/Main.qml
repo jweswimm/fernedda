@@ -140,6 +140,18 @@ Window {
     Connections {
         target: Keyboard
         function onKey(token) { if (window.handleKey(token)) Keyboard.accept() }
+        function onSwitchPane() { window.pageIndex = 2; notesPage.switchPane() }
+        function onTogglePane() {
+            if (window.pageIndex === 2) { notesPage.togglePane(); return }
+            window.pageIndex = 2            // it lives on Notes: go there and show it
+            notesPage.focusEditor()
+        }
+    }
+    // Neovim closes with the app, and may have unsaved notes to ask about first.
+    onClosing: close => close.accepted = Nvim.requestQuit()
+    Connections {
+        target: Nvim
+        function onAttention() { window.pageIndex = 2; notesPage.focusEditor() }
     }
     function currentPage() { return window.pageIndex === 2 ? notesPage : null }
     function handleKey(t) {
@@ -152,10 +164,10 @@ Window {
         pendingTimer.stop()
         if (seq === "f") { hints.start(); return true }
         if (seq === "?") { help.shown = !help.shown; return true }
-        if (seq === "H") { pageIndex = (pageIndex + pages.length - 1) % pages.length; return true }
-        if (seq === "L") { pageIndex = (pageIndex + 1) % pages.length; return true }
         const page = currentPage()
         if (page && page.handleKey(seq)) return true
+        if (seq === "H") { pageIndex = (pageIndex + pages.length - 1) % pages.length; return true }
+        if (seq === "L") { pageIndex = (pageIndex + 1) % pages.length; return true }
         if (page && page.prefixes.includes(seq)) { pending = seq; pendingTimer.restart(); return true }
         if (hadPending) return handleKey(t)                         // "gx" isn't a thing: try "x"
         return false
@@ -165,7 +177,7 @@ Window {
     Rectangle {
         anchors { left: parent.left; bottom: parent.bottom; margins: 10 }
         z: 900
-        visible: Keyboard.insertMode || window.pending !== "" || hints.active
+        visible: Keyboard.insertMode || Keyboard.editorMode || window.pending !== "" || hints.active
         width: modeText.implicitWidth + 18
         height: 24
         radius: 6
@@ -175,7 +187,8 @@ Window {
             id: modeText
             anchors.centerIn: parent
             text: hints.active ? qsTr("-- HINT --  %1").arg(hints.typed)
-                  : Keyboard.insertMode ? qsTr("-- INSERT --  Esc to leave") : window.pending
+                  : Keyboard.insertMode ? qsTr("-- INSERT --  Esc to leave")
+                  : Keyboard.editorMode ? qsTr("-- NEOVIM --  Ctrl+; to leave") : window.pending
             color: Keyboard.insertMode ? Theme.good : Theme.accent
             font.family: Theme.monoFamily
             font.pixelSize: 12
@@ -304,7 +317,9 @@ Window {
         Behavior on scale { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
         readonly property var globalKeys: [
             ["f", qsTr("hints: type a label to click it")], ["?", qsTr("this help")],
-            ["H / L", qsTr("previous / next page")], ["Esc", qsTr("back / leave a text field")],
+            ["H / L", qsTr("previous / next page (views on Notes)")], ["Esc", qsTr("back / leave a text field")],
+            ["Ctrl+;", qsTr("switch between Neovim and the app")],
+            ["Ctrl+T", qsTr("show / hide the Neovim pane")],
             ["Ctrl+1…4", qsTr("go to page")], ["F11", qsTr("full screen")]
         ]
         Column {
