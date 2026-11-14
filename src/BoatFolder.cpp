@@ -2,6 +2,7 @@
 
 #include <QDir>
 #include <QFileInfo>
+#include <QSaveFile>
 #include <QJSEngine>
 #include <QQmlEngine>
 #include <algorithm>
@@ -135,4 +136,39 @@ QString BoatFolder::relPath(const QString &abs) const
 bool BoatFolder::isFolder(const QString &rel) const
 {
     return QFileInfo(absPath(rel)).isDir();
+}
+
+QString BoatFolder::readText(const QString &rel) const
+{
+    QFile f(absPath(rel));
+    if (!f.open(QIODevice::ReadOnly))
+        return {};
+    return QString::fromUtf8(f.readAll());
+}
+
+bool BoatFolder::writeText(const QString &rel, const QString &text)
+{
+    QSaveFile f(absPath(rel));
+    if (!f.open(QIODevice::WriteOnly) || f.write(text.toUtf8()) < 0 || !f.commit()) {
+        qWarning("fernedda: couldn't write %s", qPrintable(absPath(rel)));
+        return false;
+    }
+    return true;
+}
+
+QString BoatFolder::renameFolder(const QString &rel, const QString &newName)
+{
+    const QString name = newName.trimmed();
+    if (name.isEmpty() || name == "." || name == ".." || name.contains('/') || !isFolder(rel))
+        return {};
+    const qsizetype slash = rel.lastIndexOf('/');
+    const QString to = slash < 0 ? name : rel.left(slash + 1) + name;
+    if (to == rel)
+        return to;
+    if (QFileInfo::exists(absPath(to)) || !QDir().rename(absPath(rel), absPath(to))) {
+        qWarning("fernedda: couldn't rename %s to %s", qPrintable(rel), qPrintable(to));
+        return {};
+    }
+    scan();
+    return to;
 }

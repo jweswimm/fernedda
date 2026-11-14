@@ -394,11 +394,24 @@ var lines = {
 
 // ---- lookups -------------------------------------------------------------
 
-// Every zone is a folder: boat/<view>/<zone>/ — `path` is that relative path.
+// Every zone is a folder: boat/<view>/<folder>/ — `path` is that relative
+// path, and the folder's name is the zone's name everywhere in the app. The
+// folder starts as the zone's id and follows it when you rename it (see
+// applyEdits); `key` ("<view>/<id>") never changes, and names a zone in
+// boat/.zones.json. (`title`, the drawing's own name for it, is unused.)
 var zoneById = {}
 var zoneByPath = {}
+function indexZones() {
+    for (const k in zoneByPath) delete zoneByPath[k]
+    for (const v of views)
+        for (const z of v.zones) { z.path = v.id + "/" + z.folder; zoneByPath[z.path] = z }
+}
 for (const v of views)
-    for (const z of v.zones) { z.view = v.id; z.path = v.id + "/" + z.id; zoneById[z.id] = z; zoneByPath[z.path] = z }
+    for (const z of v.zones) {
+        z.view = v.id; z.key = v.id + "/" + z.id; z.folder = z.id; zoneById[z.id] = z
+        z.title = z.name; z.name = z.folder
+    }
+indexZones()
 
 function viewById(id) {
     for (const v of views) if (v.id === id) return v
@@ -462,6 +475,55 @@ for (const v of views)
             for (const q of p) { x0 = Math.min(x0, q[0]); y0 = Math.min(y0, q[1]); x1 = Math.max(x1, q[0]); y1 = Math.max(y1, q[1]) }
         z.bbox = [x0, y0, x1, y1]
     }
+
+// ---- your edits ------------------------------------------------------------
+
+// Borders and folders you've changed, kept in boat/.zones.json as
+//   { "<view>/<id>": { points: [[x, y], …], folder: "…" } }
+// (metres, like everything here). The drawing above stays the original.
+var original = {}
+for (const v of views)
+    for (const z of v.zones) original[z.key] = { d: z.d, at: z.at }
+
+function setShape(z, d) {
+    z.d = d
+    z.polys = polygons(d)
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity
+    for (const p of z.polys)
+        for (const q of p) { x0 = Math.min(x0, q[0]); y0 = Math.min(y0, q[1]); x1 = Math.max(x1, q[0]); y1 = Math.max(y1, q[1]) }
+    z.bbox = [x0, y0, x1, y1]
+}
+
+// Where a polygon's label goes: its centroid (the middle of its corners if
+// it has no area).
+function centroid(pts) {
+    let a = 0, cx = 0, cy = 0
+    for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+        const k = pts[j][0] * pts[i][1] - pts[i][0] * pts[j][1]
+        a += k; cx += (pts[j][0] + pts[i][0]) * k; cy += (pts[j][1] + pts[i][1]) * k
+    }
+    if (Math.abs(a) < 1e-9)
+        return [pts.reduce((s, p) => s + p[0], 0) / pts.length, pts.reduce((s, p) => s + p[1], 0) / pts.length]
+    return [cx / (3 * a), cy / (3 * a)]
+}
+
+// Put every zone back to the original, then apply `edits`.
+function applyEdits(edits) {
+    for (const v of views)
+        for (const z of v.zones) {
+            const o = original[z.key], e = edits[z.key] || {}
+            z.folder = e.folder || z.id
+            z.name = z.folder
+            if (e.points && e.points.length >= 3) {
+                setShape(z, poly(e.points))
+                z.at = centroid(e.points)
+            } else if (z.d !== o.d) {
+                setShape(z, o.d)
+                z.at = o.at
+            }
+        }
+    indexZones()
+}
 
 // Topmost zone at a point in view coordinates, or null.
 function hit(view, x, y) {

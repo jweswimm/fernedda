@@ -117,6 +117,8 @@ void NvimLink::onMessage(const QVariantList &message)
             const QStringList queued = std::exchange(m_queue, {});
             for (const QString &code : queued)
                 notify("nvim_exec_lua", {code, QVariantList{}});
+        } else if (cmd == "moved") {
+            emit moved(arg);
         } else if (cmd == "tiles") {
             emit tiles(arg);
         } else if (cmd == "transparent") {

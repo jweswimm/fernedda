@@ -45,6 +45,12 @@ public:
     Q_INVOKABLE QString absPath(const QString &rel) const;
     Q_INVOKABLE QString relPath(const QString &abs) const;
     Q_INVOKABLE bool isFolder(const QString &rel) const;
+    // Rename a folder in place (same parent). Returns its new relative path,
+    // or "" if the name isn't usable or is taken, or the rename failed.
+    Q_INVOKABLE QString renameFolder(const QString &rel, const QString &newName);
+    // A small text file under the boat folder ("" if missing), and writing one.
+    Q_INVOKABLE QString readText(const QString &rel) const;
+    Q_INVOKABLE bool writeText(const QString &rel, const QString &text);
 
 signals:
     void changed();

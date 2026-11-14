@@ -56,6 +56,7 @@ signals:
     void runningChanged();
     void attention();                       // nvim is asking something: show it
     void redraw(const QVariantList &events);
+    void moved(const QString &json);        // oil moved a folder: {src, dest}
     void tiles(const QString &json);        // where the touch boxes go (see fernedda.lua)
     void transparentChanged(bool transparent);  // the colorscheme sets no background
 

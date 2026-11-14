@@ -4,35 +4,47 @@ import Fernedda
 import "BoatS235C.js" as Boat
 
 // One view of the boat (outside / deck / below), scaled to fit. Parts of the
-// boat are tappable zones (folders boat/<view>/<zone>/). `menuOpen` shows a
-// small menu on the selected zone with its category folders.
+// boat are tappable zones (folders boat/<view>/<zone>/).
 //
 //   tap a zone          → selected(folder path)
 //   tap empty water     → selected("")
-//   pick from the menu  → categoryChosen(name)
+//
+// `drawZone` set: drawing a new border for that zone instead. Taps place
+// corners; tapping the first corner again (or finish()) closes it.
+//   done                → drawn(points in metres)
+//   cancel / reset      → drawCancelled() / drawReset()
 Item {
     id: root
     property var view: Boat.views[0]
     property string selection: ""       // folder path, e.g. "below/engine/Plans"
-    property bool menuOpen: false
     signal selected(string location)
-    signal categoryChosen(string name)
-    // The folders every part of the boat can have, and the keys that pick them.
-    readonly property var categories: [
-        { name: "Documentation", key: "d", icon: "note" },
-        { name: "Plans", key: "p", icon: "list" },
-        { name: "Research", key: "r", icon: "search" }
-    ]
+    // Bumps when zones change (renamed, redrawn), so bindings re-read them.
+    property int rev: 0
+    property string drawZone: ""          // zone path whose border is being drawn
+    property bool drawEdited: false       // it has a border of yours (offer Reset)
+    property var drawPts: []              // corners so far, metres
+    property point drawHover: Qt.point(-1, -1)
+    signal drawn(var points)
+    signal drawCancelled()
+    signal drawReset()
+    // Leaving draw mode puts the camera back where it belongs.
+    onDrawZoneChanged: { drawPts = []; if (!drawZone) aim() }
+    function undoPoint() { drawPts = drawPts.slice(0, -1) }
+    function finish() { if (drawPts.length >= 3) drawn(drawPts) }
+    // Pixels on the right covered by something floating over the view; the
+    // boat fits (and zooms) in the space left of it.
+    property real reserveRight: 0
     clip: true
 
     readonly property real pad: 18
+    readonly property real fitW: Math.max(1, width - reserveRight)
     property bool zoom: true                // zoom into the selected part of the boat
 
     // Camera: the rectangle of the view (metres) fitted to the screen. It
     // eases in to the selected zone and back out to the whole view; switching
     // views snaps. Everything is re-projected from it, so lines stay crisp.
     readonly property var target: {
-        const z = selectedZone ? Boat.zoneByPath[selectedZone] : null
+        const z = rev >= 0 && selectedZone ? Boat.zoneByPath[selectedZone] : null
         const vb = view.bounds
         if (!zoom || !z || z.view !== view.id) return vb
         const bb = z.bbox
@@ -59,6 +71,30 @@ Item {
         camAnim.start()
     }
     onTargetChanged: aim()
+
+    // Zooming and panning by hand (while drawing a border). Scaling the camera
+    // rectangle about a point keeps that point where it is on screen.
+    // f > 1 zooms out.
+    function zoomAt(p, f) {
+        camAnim.stop()
+        const m = toBoat(p)
+        const w = c2 - c0, vb = view.bounds
+        f = Math.max(0.25 / w, Math.min(f, (vb[2] - vb[0]) * 1.5 / w))   // from ~25 cm across to the whole view
+        c0 = m[0] + (c0 - m[0]) * f; c2 = m[0] + (c2 - m[0]) * f
+        c1 = m[1] + (c1 - m[1]) * f; c3 = m[1] + (c3 - m[1]) * f
+    }
+    function zoomBy(f) { zoomAt(Qt.point(fitW / 2, (height - 28) / 2), f) }
+    function panBy(dx, dy) {
+        camAnim.stop()
+        const a = dx / s, b = dy / s
+        c0 -= a; c2 -= a; c1 += b; c3 += b
+    }
+    // Back to the part being drawn (as the camera had it).
+    function refit() {
+        const t = target
+        a0.to = t[0]; a1.to = t[1]; a2.to = t[2]; a3.to = t[3]
+        camAnim.restart()
+    }
     Component.onCompleted: aim()
     ParallelAnimation {
         id: camAnim
@@ -69,8 +105,8 @@ Item {
     }
 
     readonly property var b: [c0, c1, c2, c3]
-    readonly property real s: Math.max(1, Math.min((width - 2 * pad) / (b[2] - b[0]), (height - 2 * pad - 28) / (b[3] - b[1])))
-    readonly property real ox: (width - (b[2] - b[0]) * s) / 2 - b[0] * s
+    readonly property real s: Math.max(1, Math.min((fitW - 2 * pad) / (b[2] - b[0]), (height - 2 * pad - 28) / (b[3] - b[1])))
+    readonly property real ox: (fitW - (b[2] - b[0]) * s) / 2 - b[0] * s
     readonly property real oy: (height - 28 - (b[3] - b[1]) * s) / 2 + b[3] * s
     function px(x) { return ox + x * s }
     function py(y) { return oy - y * s }
@@ -204,7 +240,7 @@ Item {
 
         // Zones: invisible until hovered or selected.
         Repeater {
-            model: root.view.zones
+            model: root.rev >= 0 ? root.view.zones.slice() : []
             Shape {
                 id: zoneShape
                 required property var modelData
@@ -240,7 +276,7 @@ Item {
         // Each zone's folder as a little node graph: the zone in the middle,
         // its folders and files fanned out around it (a radial tree).
         Repeater {
-            model: root.view.zones
+            model: root.rev >= 0 ? root.view.zones.slice() : []
             Item {
                 id: graph
                 required property var modelData
@@ -284,8 +320,8 @@ Item {
         // Label on the hovered / selected zone.
         Rectangle {
             id: zoneLabel
-            readonly property var zone: Boat.zoneByPath[root.hoverZone || root.selectedZone]
-            readonly property bool show: !!zone && zone.view === root.view.id && zone !== menu.zone  // the menu has its name
+            readonly property var zone: root.rev >= 0 && !root.drawZone ? Boat.zoneByPath[root.hoverZone || root.selectedZone] : null
+            readonly property bool show: !!zone && zone.view === root.view.id
             visible: opacity > 0
             opacity: show ? 1 : 0
             Behavior on opacity { NumberAnimation { duration: Theme.fast } }
@@ -303,7 +339,7 @@ Item {
                 anchors.centerIn: parent
                 spacing: 6
                 Text {
-                    text: zoneLabel.zone ? zoneLabel.zone.name : ""
+                    text: root.rev >= 0 && zoneLabel.zone ? zoneLabel.zone.name : ""
                     color: Theme.text
                     font.family: Theme.fontFamily
                     font.pixelSize: 12
@@ -326,125 +362,162 @@ Item {
     // ---- input -------------------------------------------------------------
     HoverHandler {
         id: hover
-        cursorShape: root.hoverZone ? Qt.PointingHandCursor : Qt.ArrowCursor
+        cursorShape: root.drawZone ? Qt.CrossCursor : root.hoverZone ? Qt.PointingHandCursor : Qt.ArrowCursor
         onPointChanged: {
-            const m = menu.mapFromItem(root, point.position)
-            root.hoverZone = menu.show && menu.contains(m) ? "" : root.zoneAt(point.position)
+            root.drawHover = point.position
+            root.hoverZone = root.drawZone ? "" : root.zoneAt(point.position)
         }
-        onHoveredChanged: if (!hovered) root.hoverZone = ""
+        onHoveredChanged: if (!hovered) { root.hoverZone = ""; root.drawHover = Qt.point(-1, -1) }
     }
     TapHandler {
         // Tapping the part you're in keeps you there (a double-click is just
         // two taps); only empty water goes back to the whole boat.
-        onTapped: ev => root.selected(root.zoneAt(ev.position))
+        onTapped: ev => {
+            if (!root.drawZone) { root.selected(root.zoneAt(ev.position)); return }
+            // Drawing: tapping near the first corner closes the shape.
+            const pts = root.drawPts
+            if (pts.length >= 3 && Math.hypot(ev.position.x - root.px(pts[0][0]), ev.position.y - root.py(pts[0][1])) < 18) {
+                root.finish()
+                return
+            }
+            const m = root.toBoat(ev.position)
+            root.drawPts = pts.concat([[Math.round(m[0] * 1000) / 1000, Math.round(m[1] * 1000) / 1000]])
+        }
     }
 
-    // ---- category menu -------------------------------------------------------
-    // Sits by the selected zone and follows it as the camera moves.
-    Rectangle {
-        id: menu
-        readonly property var zone: root.menuOpen ? Boat.zoneByPath[root.selectedZone] : null
-        readonly property bool show: !!zone && zone.view === root.view.id
-        z: 10
-        width: 250
-        height: menuCol.implicitHeight + 16
-        radius: 12
-        color: Theme.surfaceHi
-        border.color: Theme.alpha(Theme.accent, 0.6)
-        visible: opacity > 0
-        opacity: show ? 1 : 0
-        scale: show ? 1 : 0.95
-        Behavior on opacity { NumberAnimation { duration: 140 } }
-        Behavior on scale { NumberAnimation { duration: 200; easing.type: Easing.OutBack } }
-        x: show ? Math.max(8, Math.min(root.width - width - 8, root.px(zone.at[0]) - width / 2)) : x
-        y: {
-            if (!show) return y
-            const at = root.py(zone.at[1])
-            const below = at + 16
-            return below + height <= root.height - 8 ? below : Math.max(8, at - height - 16)
+    // ---- drawing a border ----------------------------------------------------
+    // Wheel or pinch zooms, dragging pans (a drag isn't a tap, so it places no corner).
+    WheelHandler {
+        enabled: !!root.drawZone
+        acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+        onWheel: ev => root.zoomAt(point.position, Math.pow(0.85, ev.angleDelta.y / 120))
+    }
+    PinchHandler {
+        enabled: !!root.drawZone
+        target: null
+        property real lastScale: 1
+        property point lastCentre
+        onActiveChanged: if (active) { lastScale = activeScale; lastCentre = centroid.position }
+        onActiveScaleChanged: {
+            if (!active) return
+            root.zoomAt(centroid.position, lastScale / activeScale)
+            lastScale = activeScale
         }
-        MouseArea { anchors.fill: parent }   // clicks here aren't clicks on the boat
+        onCentroidChanged: {
+            if (!active) return
+            root.panBy(centroid.position.x - lastCentre.x, centroid.position.y - lastCentre.y)
+            lastCentre = centroid.position
+        }
+    }
+    DragHandler {
+        enabled: !!root.drawZone
+        target: null
+        property point last
+        onActiveChanged: if (active) last = centroid.position
+        onCentroidChanged: {
+            if (!active) return
+            root.panBy(centroid.position.x - last.x, centroid.position.y - last.y)
+            last = centroid.position
+        }
+    }
 
-        Column {
-            id: menuCol
-            anchors { left: parent.left; right: parent.right; top: parent.top; margins: 8 }
-            spacing: 2
-            Text {
-                leftPadding: 8
-                bottomPadding: 4
-                text: menu.zone ? menu.zone.name : ""
-                color: Theme.text
-                font.family: Theme.fontFamily
-                font.pixelSize: 13
-                font.weight: Font.DemiBold
-            }
-            Repeater {
-                model: root.categories
-                Rectangle {
-                    id: menuRow
-                    required property var modelData
-                    readonly property string path: menu.zone ? menu.zone.path + "/" + modelData.name : ""
-                    readonly property bool exists: BoatFolder.revision >= 0 && !!path && BoatFolder.isFolder(path)
-                    readonly property int files: exists && BoatFolder.revision >= 0 ? BoatFolder.fileCount(path) : 0
-                    readonly property bool hintable: true
-                    function hintActivate() { root.categoryChosen(modelData.name) }
-                    width: menuCol.width
-                    height: 36
-                    radius: 8
-                    color: rowArea.containsMouse ? Theme.alpha(Theme.accent, 0.14) : "transparent"
-                    Behavior on color { ColorAnimation { duration: Theme.fast } }
-                    Row {
-                        anchors { left: parent.left; verticalCenter: parent.verticalCenter; leftMargin: 8 }
-                        spacing: 8
-                        Icon {
-                            anchors.verticalCenter: parent.verticalCenter
-                            name: menuRow.modelData.icon
-                            size: 15
-                            color: menuRow.exists ? Theme.accent : Theme.textFaint
-                        }
-                        Text {
-                            anchors.verticalCenter: parent.verticalCenter
-                            text: menuRow.modelData.name
-                            color: menuRow.exists ? Theme.text : Theme.textDim
-                            font.family: Theme.fontFamily
-                            font.pixelSize: 13
-                        }
-                    }
-                    Row {
-                        anchors { right: parent.right; verticalCenter: parent.verticalCenter; rightMargin: 8 }
-                        spacing: 8
-                        Icon {
-                            anchors.verticalCenter: parent.verticalCenter
-                            visible: !menuRow.exists
-                            name: "plus"
-                            size: 12
-                            color: Theme.accent
-                        }
-                        Text {
-                            anchors.verticalCenter: parent.verticalCenter
-                            text: !menuRow.exists ? qsTr("Create")
-                                : menuRow.files === 1 ? qsTr("1 file")
-                                : menuRow.files ? qsTr("%1 files").arg(menuRow.files) : qsTr("Empty")
-                            color: menuRow.exists ? Theme.textFaint : Theme.accent
-                            font.family: Theme.fontFamily
-                            font.pixelSize: 11
-                        }
-                        Text {
-                            anchors.verticalCenter: parent.verticalCenter
-                            text: menuRow.modelData.key
-                            color: Theme.textFaint
-                            font.family: Theme.monoFamily
-                            font.pixelSize: 12
-                        }
-                    }
-                    MouseArea {
-                        id: rowArea
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: root.categoryChosen(menuRow.modelData.name)
+    Item {
+        anchors.fill: parent
+        visible: !!root.drawZone
+        z: 5
+        // Dim the drawing a little so the new border stands out.
+        Rectangle { anchors.fill: parent; color: Theme.alpha(Theme.bg, 0.25) }
+        Shape {
+            anchors.fill: parent
+            preferredRendererType: Shape.CurveRenderer
+            // The border so far, filled once it has an area.
+            ShapePath {
+                strokeColor: Theme.accent
+                strokeWidth: 2
+                fillColor: Theme.alpha(Theme.accent, root.drawPts.length >= 3 ? 0.15 : 0)
+                joinStyle: ShapePath.RoundJoin
+                capStyle: ShapePath.RoundCap
+                PathSvg {
+                    path: {
+                        const p = root.drawPts
+                        if (p.length < 2) return ""
+                        let d = "M " + root.px(p[0][0]) + " " + root.py(p[0][1])
+                        for (let i = 1; i < p.length; ++i) d += " L " + root.px(p[i][0]) + " " + root.py(p[i][1])
+                        return d
                     }
                 }
+            }
+            // Where the next corner would go, and the closing edge.
+            ShapePath {
+                strokeColor: Theme.alpha(Theme.accent, 0.55)
+                strokeWidth: 1.5
+                strokeStyle: ShapePath.DashLine
+                dashPattern: [4, 4]
+                fillColor: "transparent"
+                PathSvg {
+                    path: {
+                        const p = root.drawPts
+                        if (!p.length) return ""
+                        const last = p[p.length - 1], first = p[0]
+                        let d = ""
+                        if (root.drawHover.x >= 0)
+                            d += "M " + root.px(last[0]) + " " + root.py(last[1]) + " L " + root.drawHover.x + " " + root.drawHover.y
+                        if (p.length >= 3)
+                            d += " M " + root.px(last[0]) + " " + root.py(last[1]) + " L " + root.px(first[0]) + " " + root.py(first[1])
+                        return d
+                    }
+                }
+            }
+        }
+        Repeater {
+            model: root.drawPts
+            Rectangle {
+                required property var modelData
+                required property int index
+                // The first corner is bigger: tap it to close the border.
+                readonly property real d: index === 0 && root.drawPts.length >= 3 ? 16 : 9
+                x: root.px(modelData[0]) - d / 2
+                y: root.py(modelData[1]) - d / 2
+                width: d; height: d; radius: d / 2
+                color: index === 0 ? Theme.bg : Theme.accent
+                border.color: Theme.accent
+                border.width: 2
+            }
+        }
+
+        // What to do, and the buttons for it, along the top.
+        Rectangle {
+            id: drawBar
+            anchors { top: parent.top; topMargin: 10 }
+            x: Math.max(8, (root.fitW - width) / 2)
+            width: drawRow.implicitWidth + 16
+            height: 48
+            radius: 14
+            color: Theme.surfaceHi
+            border.color: Theme.alpha(Theme.accent, 0.6)
+            MouseArea { anchors.fill: parent }   // taps here aren't corners
+            Row {
+                id: drawRow
+                anchors.centerIn: parent
+                spacing: 6
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    rightPadding: 6
+                    leftPadding: 6
+                    readonly property var zone: root.rev >= 0 ? Boat.zoneByPath[root.drawZone] : null
+                    text: root.drawPts.length >= 3 ? qsTr("Tap the first corner, or Done")
+                        : qsTr("Tap the corners of %1").arg(zone ? zone.name : "")
+                    color: Theme.text
+                    font.family: Theme.fontFamily
+                    font.pixelSize: 13
+                }
+                Chip { icon: "minus"; onClicked: root.zoomBy(1.4) }
+                Chip { icon: "plus"; onClicked: root.zoomBy(1 / 1.4) }
+                Chip { icon: "expand"; text: qsTr("Fit"); onClicked: root.refit() }
+                Chip { icon: "back"; text: qsTr("Undo"); enabled: root.drawPts.length > 0; opacity: enabled ? 1 : 0.4; onClicked: root.undoPoint() }
+                Chip { visible: root.drawEdited; text: qsTr("Reset"); onClicked: root.drawReset() }
+                Chip { icon: "close"; text: qsTr("Cancel"); onClicked: root.drawCancelled() }
+                Chip { icon: "check"; text: qsTr("Done"); checked: true; enabled: root.drawPts.length >= 3; opacity: enabled ? 1 : 0.4; onClicked: root.finish() }
             }
         }
     }

@@ -112,6 +112,19 @@ local function report_tiles()
   end
 end
 
+-- Oil renamed or moved folders: tell the app ("moved", {src, dest} absolute
+-- paths), so a part of the boat follows its folder to a new name.
+local function report_moves(args)
+  if args.data.err then return end
+  for _, a in ipairs(args.data.actions or {}) do
+    if a.type == "move" and a.entry_type == "directory" then
+      local function path(url) return (url:gsub("^oil://", ""):gsub("/+$", "")) end
+      local src, dest = path(a.src_url), path(a.dest_url)
+      if under_root(src) then send("moved", vim.json.encode({ src = src, dest = dest })) end
+    end
+  end
+end
+
 -- Debounced: holding j shouldn't flood the app.
 local function schedule_report()
   if timer then timer:stop() end
@@ -132,6 +145,7 @@ function M.setup(opts)
   local group = vim.api.nvim_create_augroup("fernedda", { clear = true })
   vim.api.nvim_create_autocmd({ "CursorMoved", "BufEnter", "TextChanged", "TextChangedI", "WinScrolled", "WinResized", "VimResized", "OptionSet" }, { group = group, callback = schedule_report })
   vim.api.nvim_create_autocmd("User", { group = group, pattern = "OilEnter", callback = schedule_report })
+  vim.api.nvim_create_autocmd("User", { group = group, pattern = "OilActionsPost", callback = report_moves })
   vim.api.nvim_create_autocmd("ColorScheme", { group = group, callback = report_background })
   report_background()
   send("ready")
