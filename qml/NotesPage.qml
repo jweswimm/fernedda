@@ -22,6 +22,8 @@ Page {
     property bool zoom: true              // zoom the drawing into the selected part
     property bool paneShown: true         // the Neovim pane
     property real paneShare: 0.45         // its share of the page's width
+    property bool tiles: true             // touch boxes over oil's entries in Neovim
+    property var tileState: null          // where they go, from fernedda.lua
     Settings {
         category: "notes"
         property alias boatView: page.boatView
@@ -29,6 +31,7 @@ Page {
         property alias zoom: page.zoom
         property alias pane: page.paneShown
         property alias paneShare: page.paneShare
+        property alias tiles: page.tiles
     }
     readonly property bool compact: boatPanel.width < 1000
     readonly property bool tight: boatPanel.width < 460   // view chips are icons only
@@ -90,7 +93,13 @@ Page {
     // Oil moved (or a file was opened) in Neovim.
     Connections {
         target: Nvim
-        function onRunningChanged() { if (!Nvim.running && nvimView.activeFocus) Keyboard.release() }
+        function onRunningChanged() {
+            if (!Nvim.running && nvimView.activeFocus) Keyboard.release()
+            if (!Nvim.running) page.tileState = null
+        }
+        function onTiles(json) {
+            try { page.tileState = JSON.parse(json) } catch (e) { page.tileState = null }
+        }
         function onFocused(absPath) {
             const rel = BoatFolder.relPath(absPath)
             if (rel === "") return                       // outside the boat folder
@@ -196,6 +205,7 @@ Page {
         ["0", qsTr("the whole boat in 3D")],
         ["1 2 3", qsTr("Outside / Deck / Below")], ["H / L, gT / gt", qsTr("previous / next view")],
         ["z", qsTr("zoom into parts on / off")],
+        ["t", qsTr("touch mode (bigger text, tappable files) on / off")],
         ["i", qsTr("insert readings into the open file")]
     ]
     function handleKey(seq) {
@@ -214,6 +224,7 @@ Page {
         case "L": case "gt": cycleView(1); return true
         case "H": case "gT": cycleView(-1); return true
         case "z": zoom = !zoom; return true
+        case "t": tiles = !tiles; return true
         case "i": insertReadings(); return true
         case "Escape":
             if (menuOpen) { menuOpen = false; return true }
@@ -238,15 +249,114 @@ Page {
         readonly property bool hintable: true
         function hintActivate() { page.focusEditor() }
 
+        // Touch mode: each file and folder oil shows is a button. Drawn under
+        // Neovim, whose text shows through (it paints no default background);
+        // the tap targets sit on top of Neovim, further down.
+        Item {
+            id: touch
+            anchors.fill: nvimView
+            readonly property var st: page.tiles && Nvim.running ? page.tileState : null
+            readonly property var targets: !st ? [] : st.status
+                ? st.boxes.concat([Object.assign({ name: "..", status: true }, st.status)]) : st.boxes
+            property string pressed: ""       // the name whose target is held down
+            // The pane stays dark in day mode, so draw with the night colours then.
+            readonly property var pal: Theme.dark ? Theme.p : Theme.palettes.night
+            function rectOf(b) {
+                // Re-read whenever the cell size changes.
+                return nvimView.cellHeight > 0 && nvimView.footerRows >= 0
+                    ? nvimView.cellsRect(b.row - 1, b.col - 1, b.width) : Qt.rect(0, 0, 0, 0)
+            }
+            Repeater {
+                model: touch.st ? touch.st.boxes : []
+                Item {
+                    id: button
+                    required property var modelData
+                    readonly property rect at: touch.rectOf(modelData)
+                    readonly property real cellW: at.width / Math.max(1, modelData.width)
+                    readonly property bool down: touch.pressed === modelData.name
+                    x: at.x - 7
+                    y: at.y + 3
+                    // To the window's right edge, less a cell.
+                    width: Math.max(at.width + 14, (modelData.span - 1) * cellW + 7)
+                    height: at.height - 6
+                    // A darker edge under the face, which the face sinks into when pressed.
+                    Rectangle {
+                        anchors.fill: parent
+                        anchors.topMargin: 2
+                        radius: 8
+                        color: Qt.darker(touch.pal.surfaceHi, 1.6)
+                    }
+                    Rectangle {
+                        width: parent.width
+                        height: parent.height - 2
+                        y: button.down ? 2 : 0
+                        radius: 8
+                        color: button.down ? Theme.alpha(touch.pal.accent, 0.3)
+                             : button.modelData.cur ? Qt.lighter(touch.pal.surfaceHi, 1.25) : touch.pal.surfaceHi
+                        border.width: button.modelData.cur ? 1.5 : 1
+                        border.color: button.modelData.cur || button.down ? touch.pal.accent : touch.pal.border
+                        Icon {
+                            visible: button.modelData.dir
+                            anchors { right: parent.right; rightMargin: 10; verticalCenter: parent.verticalCenter }
+                            name: "chevron"
+                            size: 16
+                            color: button.modelData.cur ? touch.pal.accent : touch.pal.textDim
+                        }
+                    }
+                }
+            }
+        }
+
         NvimView {
             id: nvimView
             anchors.fill: parent
             anchors.margins: 8
             visible: Nvim.running
             font.family: "monospace"
-            font.pixelSize: 14
+            // Touch mode: bigger text and taller rows are easier to tap.
+            font.pixelSize: page.tiles ? 18 : 14
+            lineSpacing: page.tiles ? 12 : 0
+            // ...but the path at the bottom and the command line stay as they were.
+            footerRows: page.tiles && page.tileState ? page.tileState.footer || 0 : 0
+            footerPixelSize: 14
             // Light text on a light panel is unreadable, so day mode stays dark here.
             hostBackground: Theme.dark ? Theme.surface : Theme.palettes.night.surface
+
+            // Tap targets over the buttons below (Neovim is drawn between them),
+            // and an outline on the status line's name: up a folder, or back to
+            // the folder from a file. Taps drive oil, so the keys work as ever.
+            Repeater {
+                model: touch.targets
+                Item {
+                    id: target
+                    required property var modelData
+                    readonly property bool status: modelData.name === ".." && modelData.status === true
+                    readonly property rect at: touch.rectOf(modelData)
+                    readonly property real cellW: at.width / Math.max(1, modelData.width)
+                    x: at.x - 6
+                    y: at.y
+                    width: Math.max(at.width, modelData.span * cellW) + 6
+                    height: at.height
+                    Rectangle {
+                        visible: target.status
+                        x: 2; y: 1
+                        width: target.at.width + 8
+                        height: parent.height - 2
+                        radius: 4
+                        color: tap.pressed ? Theme.alpha(touch.pal.accent, 0.3) : "transparent"
+                        border.color: Theme.alpha(touch.pal.accent, tap.pressed ? 0.9 : 0.45)
+                    }
+                    MouseArea {
+                        id: tap
+                        anchors.fill: parent
+                        onPressedChanged: touch.pressed = pressed ? target.modelData.name : ""
+                        onClicked: {
+                            Nvim.tap(target.modelData.name)
+                            page.focusEditor()
+                        }
+                    }
+                }
+            }
         }
         Text {
             anchors.centerIn: parent

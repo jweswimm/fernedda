@@ -18,6 +18,16 @@ class NvimView : public QQuickPaintedItem {
     // as a terminal's own background would be.
     Q_PROPERTY(QColor hostBackground READ hostBackground WRITE setHostBackground NOTIFY backgroundChanged)
     Q_PROPERTY(QColor background READ background NOTIFY backgroundChanged)
+    // Extra pixels between rows (the text stays centred in its row).
+    Q_PROPERTY(int lineSpacing READ lineSpacing WRITE setLineSpacing NOTIFY fontChanged)
+    // The bottom rows (status line, command line) can be drawn smaller than
+    // the rest: `footerRows` of them at `footerPixelSize` with no line spacing
+    // (0 = like the rest). Neovim's grid is the same either way.
+    Q_PROPERTY(int footerRows READ footerRows WRITE setFooterRows NOTIFY fontChanged)
+    Q_PROPERTY(int footerPixelSize READ footerPixelSize WRITE setFooterPixelSize NOTIFY fontChanged)
+    // One grid cell above the footer, for placing things over the text.
+    Q_PROPERTY(qreal cellWidth READ cellWidth NOTIFY fontChanged)
+    Q_PROPERTY(qreal cellHeight READ cellHeight NOTIFY fontChanged)
 
 public:
     explicit NvimView(QQuickItem *parent = nullptr);
@@ -27,6 +37,16 @@ public:
     QColor hostBackground() const { return m_hostBg; }
     void setHostBackground(const QColor &color);
     QColor background() const { return m_bg; }
+    int lineSpacing() const { return m_lineSpacing; }
+    void setLineSpacing(int px);
+    int footerRows() const { return m_footerRows; }
+    void setFooterRows(int rows);
+    int footerPixelSize() const { return m_footerPx; }
+    void setFooterPixelSize(int px);
+    qreal cellWidth() const { return m_body.cellW; }
+    qreal cellHeight() const { return m_body.cellH; }
+    // Where `count` cells from (row, col) are drawn, 0-based, in this item.
+    Q_INVOKABLE QRectF cellsRect(int row, int col, int count) const;
 
     void paint(QPainter *painter) override;
 
@@ -77,14 +97,27 @@ private:
     QColor fgOf(const Attr &a) const;
     QColor bgOf(const Attr &a) const;
     QColor spOf(const Attr &a) const;
-    const QFont &fontOf(const Attr &a) const { return m_fonts[(a.bold ? 1 : 0) + (a.italic ? 2 : 0)]; }
-    void paintLine(QPainter *p, const Attr &a, qreal x, qreal y, qreal w);
+    // A font size's cells: the body rows have one, the footer rows another.
+    struct Metrics {
+        QFont fonts[4];            // regular, bold, italic, bold italic
+        qreal cellW = 8, cellH = 16, baseline = 12;
+        const QFont &of(const Attr &a) const { return fonts[(a.bold ? 1 : 0) + (a.italic ? 2 : 0)]; }
+    };
+    static Metrics makeMetrics(QFont font, int spacing);
+    int footerCount() const { return qMin(m_footerRows, m_rows); }
+    bool inFooter(int row) const { return row >= m_rows - footerCount(); }
+    const Metrics &metricsOf(int row) const { return inFooter(row) ? m_foot : m_body; }
+    qreal rowY(int row) const;
+    int rowAt(qreal y) const;
+    void paintLine(QPainter *p, const Metrics &m, const Attr &a, qreal x, qreal y, qreal w);
     void paintCursor(QPainter *p);
     void mouse(QMouseEvent *event, const QString &action);
 
     QFont m_font;
-    QFont m_fonts[4];              // regular, bold, italic, bold italic
-    qreal m_cellW = 8, m_cellH = 16, m_baseline = 12;
+    Metrics m_body, m_foot;
+    int m_lineSpacing = 0;
+    int m_footerRows = 0;
+    int m_footerPx = 0;
     QTimer m_resize;
 
     int m_cols = 0, m_rows = 0;

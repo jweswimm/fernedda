@@ -117,6 +117,8 @@ void NvimLink::onMessage(const QVariantList &message)
             const QStringList queued = std::exchange(m_queue, {});
             for (const QString &code : queued)
                 notify("nvim_exec_lua", {code, QVariantList{}});
+        } else if (cmd == "tiles") {
+            emit tiles(arg);
         } else if (cmd == "transparent") {
             emit transparentChanged(arg == "1");
         } else if (cmd == "attention") {
@@ -152,6 +154,7 @@ void NvimLink::call(const QString &fn, const QString &arg)
 void NvimLink::reveal(const QString &absPath) { call("reveal", absPath); }
 void NvimLink::openFolder(const QString &absPath) { call("open_folder", absPath); }
 void NvimLink::insert(const QString &text) { call("insert", text); }
+void NvimLink::tap(const QString &name) { call("tap", name); }
 
 void NvimLink::resizeUi(int cols, int rows)
 {

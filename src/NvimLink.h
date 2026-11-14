@@ -37,6 +37,9 @@ public:
     Q_INVOKABLE void openFolder(const QString &absPath);
     // Put Markdown lines below the cursor in the note being edited.
     Q_INVOKABLE void insert(const QString &text);
+    // A touch box was tapped: an oil entry's name, ".." for up, or anything
+    // while editing a file to go back to its folder.
+    Q_INVOKABLE void tap(const QString &name);
     // The window wants to close. True: go ahead. False: nvim is quitting first
     // (it asks about unsaved notes) and the app quits when it has. A second
     // close while that's pending stops nvim, leaving its swap files to recover.
@@ -53,6 +56,7 @@ signals:
     void runningChanged();
     void attention();                       // nvim is asking something: show it
     void redraw(const QVariantList &events);
+    void tiles(const QString &json);        // where the touch boxes go (see fernedda.lua)
     void transparentChanged(bool transparent);  // the colorscheme sets no background
 
 private:

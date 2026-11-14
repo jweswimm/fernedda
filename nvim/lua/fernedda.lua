@@ -55,10 +55,70 @@ local function report()
   send("focus", p)
 end
 
+-- Touch boxes: where oil's entries are on the screen, so the app can draw a
+-- tappable box around each. Cells are 1-based screen rows / columns:
+--   { boxes = { { name, dir, cur, row, col, width, span } }, status = { row, col, width, span } }
+-- `span` is the cells from `col` to the window's right edge: the whole rest of
+-- the row taps the entry, not just its name.
+-- `status` is the current window's status line (tap: up a folder in oil, back
+-- to the folder when editing a file). `footer` is how many rows at the bottom
+-- are the last status line and the command line, which the app draws smaller.
+local last_tiles = nil
+local function report_tiles()
+  local win = vim.api.nvim_get_current_win()
+  local info = vim.fn.getwininfo(win)[1]
+  local wins = #vim.tbl_filter(function(w) return vim.api.nvim_win_get_config(w).relative == "" end,
+    vim.api.nvim_tabpage_list_wins(0))
+  local ls = vim.o.laststatus
+  local has_status = ls == 2 or ls == 3 or (ls == 1 and wins > 1)
+  local state = { boxes = {}, footer = vim.o.cmdheight + (has_status and 1 or 0) }
+  local ok, oil = pcall(require, "oil")
+  if ok and vim.bo.filetype == "oil" and oil.get_current_dir() then
+    local leftcol = vim.fn.winsaveview().leftcol
+    local curline = vim.fn.line(".")
+    for lnum = info.topline, info.botline do
+      local e = oil.get_entry_on_line(0, lnum)
+      local text = vim.fn.getline(lnum)
+      -- Oil conceals each line's "/<id> " prefix; what's left before the name
+      -- (an icon column, say) is on screen.
+      local body = text:gsub("^/%d+%s", "", 1)
+      local at = e and e.name ~= "" and body:find(e.name, 1, true)
+      local row = at and vim.fn.screenpos(win, lnum, 1).row or 0
+      if row > 0 then
+        local col = info.wincol + info.textoff + vim.fn.strdisplaywidth(body:sub(1, at - 1)) - leftcol
+        local width = vim.fn.strdisplaywidth(e.name) + (e.type == "directory" and 1 or 0)
+        width = math.min(width, info.wincol + info.width - col)
+        local span = info.wincol + info.width - col
+        if width > 0 then
+          table.insert(state.boxes, { name = e.name, dir = e.type == "directory", cur = lnum == curline,
+                                      row = row, col = col, width = width, span = span })
+        end
+      end
+    end
+  end
+  local floating = vim.api.nvim_win_get_config(win).relative ~= ""
+  if not floating and vim.o.laststatus > 0 and (vim.bo.filetype == "oil" or vim.bo.buftype == "") then
+    -- The default status line starts with the name; a custom one, take it all.
+    local width = info.width
+    if vim.o.statusline == "" then
+      width = math.min(width, vim.api.nvim_eval_statusline("%f", { winid = win }).width)
+    end
+    state.status = { row = info.winrow + info.height, col = info.wincol, width = width, span = info.width }
+  end
+  local msg = vim.json.encode(state)
+  if msg ~= last_tiles then
+    last_tiles = msg
+    send("tiles", msg)
+  end
+end
+
 -- Debounced: holding j shouldn't flood the app.
 local function schedule_report()
   if timer then timer:stop() end
-  timer = vim.defer_fn(report, 40)
+  timer = vim.defer_fn(function()
+    report()
+    report_tiles()
+  end, 40)
 end
 
 -- A colorscheme with no Normal background leaves it to the host, like a
@@ -70,7 +130,7 @@ end
 function M.setup(opts)
   cfg.root = vim.fs.normalize(opts.root)
   local group = vim.api.nvim_create_augroup("fernedda", { clear = true })
-  vim.api.nvim_create_autocmd({ "CursorMoved", "BufEnter" }, { group = group, callback = schedule_report })
+  vim.api.nvim_create_autocmd({ "CursorMoved", "BufEnter", "TextChanged", "TextChangedI", "WinScrolled", "WinResized", "VimResized", "OptionSet" }, { group = group, callback = schedule_report })
   vim.api.nvim_create_autocmd("User", { group = group, pattern = "OilEnter", callback = schedule_report })
   vim.api.nvim_create_autocmd("ColorScheme", { group = group, callback = report_background })
   report_background()
@@ -170,6 +230,24 @@ M.open_folder = later(function(path)
   else
     open_folder(path)
   end
+end)
+
+-- A touch box was tapped. In oil: ".." goes up, a folder opens in oil, a
+-- file opens for editing. Editing a file: any tap goes back to its folder.
+M.tap = later(function(name)
+  local ok, oil = pcall(require, "oil")
+  if not ok then return end
+  vim.cmd.stopinsert()
+  if vim.bo.filetype ~= "oil" then
+    oil.open() -- the current file's folder, cursor on the file
+    return
+  end
+  if name == ".." then
+    require("oil.actions").parent.callback() -- cursor lands on the folder you left
+    return
+  end
+  place_cursor(name)
+  oil.select()
 end)
 
 -- Insert Markdown lines below the cursor, in a file under the boat folder.

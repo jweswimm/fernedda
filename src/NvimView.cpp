@@ -86,8 +86,11 @@ QString mouseMods(Qt::KeyboardModifiers mods)
 NvimView::NvimView(QQuickItem *parent) : QQuickPaintedItem(parent)
 {
     setAcceptedMouseButtons(Qt::LeftButton | Qt::MiddleButton | Qt::RightButton);
-    setOpaquePainting(true);
-    setFillColor(m_bg);
+    // Not opaque, with no fill of its own: the parent shows `background`, and
+    // anything placed under this item (touch buttons) shows through around the
+    // text. (Opaque painting with a transparent fill draws black on a GPU.)
+    setOpaquePainting(false);
+    setFillColor(Qt::transparent);
 
     m_resize.setSingleShot(true);
     m_resize.setInterval(40);     // resizes come in bursts while dragging
@@ -117,6 +120,18 @@ void NvimView::setFont(const QFont &font)
     emit fontChanged();
 }
 
+void NvimView::setLineSpacing(int px)
+{
+    px = qMax(0, px);
+    if (px == m_lineSpacing)
+        return;
+    m_lineSpacing = px;
+    updateMetrics();
+    m_resize.start();
+    update();
+    emit fontChanged();
+}
+
 void NvimView::setHostBackground(const QColor &color)
 {
     if (color == m_hostBg)
@@ -131,7 +146,6 @@ void NvimView::updateBackground()
     if (color == m_bg)
         return;
     m_bg = color;
-    setFillColor(color);
     update();
     emit backgroundChanged();
 }
@@ -140,15 +154,70 @@ void NvimView::updateMetrics()
 {
     m_font.setStyleHint(QFont::Monospace);
     m_font.setKerning(false);
+    m_body = makeMetrics(m_font, m_lineSpacing);
+    QFont foot = m_font;
+    if (m_footerPx > 0)
+        foot.setPixelSize(m_footerPx);
+    m_foot = m_footerPx > 0 ? makeMetrics(foot, 0) : m_body;
+}
+
+NvimView::Metrics NvimView::makeMetrics(QFont font, int spacing)
+{
+    Metrics m;
     for (int i = 0; i < 4; ++i) {
-        m_fonts[i] = m_font;
-        m_fonts[i].setBold(i & 1);
-        m_fonts[i].setItalic(i & 2);
+        m.fonts[i] = font;
+        m.fonts[i].setBold(i & 1);
+        m.fonts[i].setItalic(i & 2);
     }
-    const QFontMetricsF fm(m_font);
-    m_cellW = fm.horizontalAdvance(QLatin1Char('M'));
-    m_cellH = qCeil(fm.height());
-    m_baseline = qRound((m_cellH - fm.height()) / 2 + fm.ascent());
+    const QFontMetricsF fm(font);
+    m.cellW = fm.horizontalAdvance(QLatin1Char('M'));
+    m.cellH = qCeil(fm.height()) + spacing;
+    m.baseline = qRound((m.cellH - fm.height()) / 2 + fm.ascent());
+    return m;
+}
+
+void NvimView::setFooterRows(int rows)
+{
+    rows = qMax(0, rows);
+    if (rows == m_footerRows)
+        return;
+    m_footerRows = rows;
+    m_resize.start();
+    update();
+    emit fontChanged();
+}
+
+void NvimView::setFooterPixelSize(int px)
+{
+    px = qMax(0, px);
+    if (px == m_footerPx)
+        return;
+    m_footerPx = px;
+    updateMetrics();
+    m_resize.start();
+    update();
+    emit fontChanged();
+}
+
+// Body rows from the top, then the footer rows below them.
+qreal NvimView::rowY(int row) const
+{
+    const int body = m_rows - footerCount();
+    return row <= body ? row * m_body.cellH : body * m_body.cellH + (row - body) * m_foot.cellH;
+}
+
+int NvimView::rowAt(qreal y) const
+{
+    const int body = m_rows - footerCount();
+    const int row = y < body * m_body.cellH ? int(y / m_body.cellH)
+                                            : body + int((y - body * m_body.cellH) / m_foot.cellH);
+    return qBound(0, row, qMax(0, m_rows - 1));
+}
+
+QRectF NvimView::cellsRect(int row, int col, int count) const
+{
+    const Metrics &m = metricsOf(row);
+    return QRectF(col * m.cellW, rowY(row), count * m.cellW, m.cellH);
 }
 
 void NvimView::geometryChange(const QRectF &newGeometry, const QRectF &oldGeometry)
@@ -160,8 +229,9 @@ void NvimView::geometryChange(const QRectF &newGeometry, const QRectF &oldGeomet
 
 void NvimView::sendSize()
 {
-    const int cols = qMax(1, int(width() / m_cellW));
-    const int rows = qMax(1, int(height() / m_cellH));
+    const int cols = qMax(1, int(width() / m_body.cellW));
+    const int foot = m_footerRows;
+    const int rows = qMax(1, foot + int((height() - foot * m_foot.cellH) / m_body.cellH));
     NvimLink::instance()->resizeUi(cols, rows);
 }
 
@@ -325,15 +395,15 @@ QColor NvimView::spOf(const Attr &a) const
     return fgOf(a);
 }
 
-void NvimView::paintLine(QPainter *p, const Attr &a, qreal x, qreal y, qreal w)
+void NvimView::paintLine(QPainter *p, const Metrics &m, const Attr &a, qreal x, qreal y, qreal w)
 {
     if (a.strike) {
         p->setPen(fgOf(a));
-        p->drawLine(QPointF(x, y + m_cellH / 2), QPointF(x + w, y + m_cellH / 2));
+        p->drawLine(QPointF(x, y + m.cellH / 2), QPointF(x + w, y + m.cellH / 2));
     }
     if (a.underline == NoLine)
         return;
-    const qreal ly = y + m_baseline + 1.5;
+    const qreal ly = y + m.baseline + 1.5;
     QPen pen(spOf(a));
     switch (a.underline) {
     case Curl: {
@@ -366,24 +436,29 @@ void NvimView::paint(QPainter *p)
 
     // Backgrounds first, so a glyph overhanging its cell isn't cut off by the next.
     for (int r = 0; r < m_rows; ++r) {
+        const Metrics &m = metricsOf(r);
+        const qreal y = rowY(r);
         for (int c = 0; c < m_cols;) {
             const QColor bg = bgOf(attr(cell(r, c).hl));
             int end = c + 1;
             while (end < m_cols && bgOf(attr(cell(r, end).hl)) == bg)
                 ++end;
+            // A smaller footer row doesn't reach the right edge; its last colour does.
+            const qreal right = end == m_cols ? width() : end * m.cellW;
             if (bg != m_bg)
-                p->fillRect(QRectF(c * m_cellW, r * m_cellH, (end - c) * m_cellW, m_cellH), bg);
+                p->fillRect(QRectF(c * m.cellW, y, right - c * m.cellW, m.cellH), bg);
             c = end;
         }
     }
 
     for (int r = 0; r < m_rows; ++r) {
-        const qreal y = r * m_cellH;
+        const Metrics &m = metricsOf(r);
+        const qreal y = rowY(r);
         for (int c = 0; c < m_cols;) {
             const Cell &first = cell(r, c);
             const Attr &a = attr(first.hl);
             if (a.underline != NoLine || a.strike)
-                paintLine(p, a, c * m_cellW, y, m_cellW);
+                paintLine(p, m, a, c * m.cellW, y, m.cellW);
             if (first.text.isEmpty() || first.text == QLatin1String(" ")) {
                 ++c;
                 continue;
@@ -399,14 +474,14 @@ void NvimView::paint(QPainter *p)
                     if (next.hl != first.hl || !ascii(next.text) || next.text == QLatin1String(" "))
                         break;
                     if (a.underline != NoLine || a.strike)
-                        paintLine(p, a, end * m_cellW, y, m_cellW);
+                        paintLine(p, m, a, end * m.cellW, y, m.cellW);
                     run += next.text;
                     ++end;
                 }
             }
-            p->setFont(fontOf(a));
+            p->setFont(m.of(a));
             p->setPen(fgOf(a));
-            p->drawText(QPointF(c * m_cellW, y + m_baseline), run);
+            p->drawText(QPointF(c * m.cellW, y + m.baseline), run);
             c = end;
         }
     }
@@ -432,7 +507,8 @@ void NvimView::paintCursor(QPainter *p)
     }
 
     const bool wide = m_curCol + 1 < m_cols && cell(m_curRow, m_curCol + 1).text.isEmpty();
-    const QRectF box(m_curCol * m_cellW, m_curRow * m_cellH, m_cellW * (wide ? 2 : 1), m_cellH);
+    const Metrics &m = metricsOf(m_curRow);
+    const QRectF box = cellsRect(m_curRow, m_curCol, wide ? 2 : 1);
 
     if (!hasActiveFocus()) {
         p->setPen(fill);
@@ -450,9 +526,9 @@ void NvimView::paintCursor(QPainter *p)
         break;
     case CursorMode::Block:
         p->fillRect(box, fill);
-        p->setFont(fontOf(cellAttr));
+        p->setFont(m.of(cellAttr));
         p->setPen(text);
-        p->drawText(QPointF(box.left(), box.top() + m_baseline), under.text);
+        p->drawText(QPointF(box.left(), box.top() + m.baseline), under.text);
         break;
     }
 }
@@ -472,8 +548,8 @@ void NvimView::keyPressEvent(QKeyEvent *event)
 
 void NvimView::mouse(QMouseEvent *event, const QString &action)
 {
-    const int row = qBound(0, int(event->position().y() / m_cellH), qMax(0, m_rows - 1));
-    const int col = qBound(0, int(event->position().x() / m_cellW), qMax(0, m_cols - 1));
+    const int row = rowAt(event->position().y());
+    const int col = qBound(0, int(event->position().x() / metricsOf(row).cellW), qMax(0, m_cols - 1));
     if (action == QLatin1String("drag") && row == m_dragRow && col == m_dragCol)
         return;                   // still in the same cell
     m_dragRow = row;
@@ -500,8 +576,8 @@ void NvimView::wheelEvent(QWheelEvent *event)
         event->ignore();
         return;
     }
-    const int row = qBound(0, int(event->position().y() / m_cellH), qMax(0, m_rows - 1));
-    const int col = qBound(0, int(event->position().x() / m_cellW), qMax(0, m_cols - 1));
+    const int row = rowAt(event->position().y());
+    const int col = qBound(0, int(event->position().x() / metricsOf(row).cellW), qMax(0, m_cols - 1));
     NvimLink::instance()->inputMouse("wheel", dy > 0 ? "up" : "down", mouseMods(event->modifiers()), row, col);
     event->accept();
 }
