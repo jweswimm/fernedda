@@ -127,19 +127,15 @@ M.reveal = later(function(path)
   last = path
   quiet_until = vim.uv.now() + 400
   if here == dir then return settle() end
-  vim.api.nvim_create_autocmd("User", {
-    pattern = "OilEnter",
-    once = true,
-    callback = function()
-      vim.schedule(function()
-        settle()
-        opened()
-      end)
-    end,
-  })
   opening = true
   vim.defer_fn(opened, 1000) -- never leave an open_folder waiting if oil didn't open
-  oil.open(dir)
+  -- Not an OilEnter autocmd: that only fires the first time oil loads a folder.
+  oil.open(dir, nil, function()
+    vim.schedule(function()
+      settle()
+      opened()
+    end)
+  end)
 end)
 
 local function open_folder(path)

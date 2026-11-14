@@ -7,7 +7,8 @@ Native Qt 6 / QML, made for a laptop now and a Raspberry Pi screen later.
 - **Dashboard**: wind, navigation, depth, house bank, engine, tanks, weather, heel and position.
   Click any card to zoom into its history (5 min to 6 h).
 - **Data**: every Signal K path the boat reports, live, with sparklines. Use it to check what a new sensor is sending.
-- **Notes**: a drawing of the S2 35C (outside profile, deck, below decks) that fills the page. Click a part
+- **Notes**: in the boat folder itself, a slowly turning 3D model of the S2 35C. Go into a part of the boat, or
+  choose a view, for its drawing (outside profile, deck, below decks). Click a part
   of the boat for its **Documentation**, **Plans** and **Research** folders (`boat/below/engine/Plans/`);
   picking one, and creating it if it's missing, opens it in Neovim beside the drawing.
   *Insert readings* stamps engine hours, battery and position into the file you're editing.
@@ -21,7 +22,7 @@ The Notes page has a Neovim pane: a real `nvim --embed` on the boat folder, with
 plugins, drawn by the app itself, so it needs no terminal or window manager. It's linked both ways:
 
 - move the cursor in oil and the app shows that part of the boat;
-- pick a part of the boat in the app and oil moves to it (only while oil is showing; a file you're
+- pick a part of the boat or a view (Outside, Deck, Below) in the app and oil moves to it (only while oil is showing; a file you're
   editing is left alone). Picking a category always opens its folder; the file you were editing stays open.
 
 `Alt+Tab` or `Ctrl+;` moves the keyboard between the pane and the app. Drag the gap beside the pane to resize it;
@@ -40,13 +41,13 @@ Vim-style normal mode everywhere; typing in a text field is insert mode (Esc lea
 - `?` — all keys · `H` / `L` — previous / next page (views on Notes) · `Alt+Tab` or `Ctrl+;` — switch between Neovim and the app · `Ctrl+T` — show / hide Neovim
 - Notes: `h` `j` `k` `l` move to the part of the boat left / below / above / right ·
   `Enter` show / hide its folders, then `d` `p` `r` open Documentation / Plans / Research ·
-  `Space` `h` or `-` back / up a folder, out to the whole boat · `1` `2` `3`, `H` `L` or `gT` `gt` views · `z` zoom on / off ·
+  `Space` `h` or `-` back / up a folder, out to the whole boat · `0` the 3D model · `1` `2` `3`, `H` `L` or `gT` `gt` views · `z` zoom on / off ·
   `i` insert readings
 
 ## Build
 
 ```sh
-sudo dnf install qt6-qtbase-devel qt6-qtdeclarative-devel qt6-qtwebsockets-devel
+sudo dnf install qt6-qtbase-devel qt6-qtdeclarative-devel qt6-qtwebsockets-devel qt6-qtquick3d
 cmake -S . -B build
 cmake --build build      # also installs to ~/.local (FERNEDDA_AUTO_INSTALL)
 ./build/fernedda
@@ -76,8 +77,10 @@ cmake --build build      # also installs to ~/.local (FERNEDDA_AUTO_INSTALL)
 | `nvim/lua/fernedda.lua` | The Neovim side of the link (oil cursor → app; reveal / open_folder / insert) |
 | `qml/BoatS235C.js`  | The boat drawing and its tappable zones, as data in metres; edit to match your boat |
 | `qml/BoatView.qml`  | Renders one view of the boat, hit-tests zones, shows the category menu |
+| `qml/BoatMesh.js`   | Lofts the 3D model from the lines in `BoatS235C.js` |
+| `qml/Boat3D.qml`    | Renders and turns the 3D model (Qt Quick 3D) |
 | `qml/`              | UI: `Theme`, `Units` (SI → knots/°C/…), cards, gauges, pages |
 
 To check a layout without a display:
 `QT_QPA_PLATFORM=offscreen FERNEDDA_SCREENSHOT=shot.png ./build/fernedda`
-(add `FERNEDDA_KEYS="f s f"` to type keys first).
+(add `FERNEDDA_KEYS="f s f"` to type keys first). The offscreen platform can't draw the 3D model; that takes a real GPU context.

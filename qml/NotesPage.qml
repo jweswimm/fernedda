@@ -17,6 +17,7 @@ Page {
 
     property string boatView: "outside"
     property string location: ""          // folder path, e.g. "below/engine"
+    property bool overview: true          // in the boat folder itself: the turning 3D model, not a drawing
     property bool menuOpen: false         // the category menu on the selected part
     property bool zoom: true              // zoom the drawing into the selected part
     property bool paneShown: true         // the Neovim pane
@@ -30,6 +31,7 @@ Page {
         property alias paneShare: page.paneShare
     }
     readonly property bool compact: boatPanel.width < 1000
+    readonly property bool tight: boatPanel.width < 460   // view chips are icons only
 
     Component.onCompleted: {
         const zones = []
@@ -37,6 +39,7 @@ Page {
             for (const z of v.zones) zones.push(z.path)
         BoatFolder.setZones(zones)
         if (location && !BoatFolder.isFolder(location)) location = ""
+        overview = !location.includes("/")
     }
     // The first time this page opens, bring up Neovim in its pane.
     property bool launched: false
@@ -69,12 +72,19 @@ Page {
         const i = locInfo(loc)
         if (i && i.view) boatView = i.view
         if (!i || !i.zone) menuOpen = false
+        // In oil, the boat folder's own listing has the cursor on a view's folder.
+        if (loc.includes("/")) overview = false
+        else if (fromNvim) overview = true
         if (!fromNvim && Nvim.running) Nvim.reveal(BoatFolder.absPath(loc))
     }
     function up() {
         if (menuOpen) { menuOpen = false; return }
-        if (!location) return
-        setLocation(location.includes("/") ? location.slice(0, location.lastIndexOf("/")) : "")
+        if (location.includes("/")) setLocation(location.slice(0, location.lastIndexOf("/")))
+        else showOverview()
+    }
+    function showOverview() {
+        overview = true
+        setLocation("")
     }
 
     // Oil moved (or a file was opened) in Neovim.
@@ -142,8 +152,8 @@ Page {
     // Boat views and zones from the keyboard.
     function setView(i) {
         if (i < 0 || i >= Boat.views.length) return
-        menuOpen = false
-        boatView = Boat.views[i].id
+        overview = false
+        setLocation(Boat.views[i].id)
     }
     function cycleView(d) {
         const i = Boat.views.findIndex(v => v.id === boatView)
@@ -183,6 +193,7 @@ Page {
         ["Enter", qsTr("show / hide the part's folders")],
         ["d p r", qsTr("open Documentation / Plans / Research (in the menu)")],
         ["Space h, - / Backspace", qsTr("back / up a folder, out to the whole boat")],
+        ["0", qsTr("the whole boat in 3D")],
         ["1 2 3", qsTr("Outside / Deck / Below")], ["H / L, gT / gt", qsTr("previous / next view")],
         ["z", qsTr("zoom into parts on / off")],
         ["i", qsTr("insert readings into the open file")]
@@ -196,6 +207,7 @@ Page {
         case "h": case "j": case "k": case "l": step(seq); return true
         case "Enter": toggleMenu(); return true
         case "Spaceh": case "-": case "Backspace": up(); return true
+        case "0": showOverview(); return true
         case "1": setView(0); return true
         case "2": setView(1); return true
         case "3": setView(2); return true
@@ -283,7 +295,7 @@ Page {
                 radius: 12
                 color: Theme.surfaceHi
                 border.color: info ? Theme.alpha(Theme.accent, 0.45) : Theme.border
-                readonly property var info: page.locInfo(page.location)
+                readonly property var info: page.overview ? null : page.locInfo(page.location)
                 RowLayout {
                     id: whereRow
                     anchors.fill: parent
@@ -322,15 +334,21 @@ Page {
                 }
             }
             Item { Layout.fillWidth: true }
+            Chip {
+                compact: page.compact
+                text: qsTr("3D")
+                checked: page.overview
+                onClicked: page.showOverview()
+            }
             Repeater {
                 model: Boat.views
                 Chip {
                     required property var modelData
                     required property int index
                     compact: page.compact
-                    text: modelData.label
+                    text: page.tight ? "" : modelData.label
                     icon: ({ outside: "boat", deck: "hull", below: "home" })[modelData.id] || "boat"
-                    checked: page.boatView === modelData.id
+                    checked: !page.overview && page.boatView === modelData.id
                     onClicked: page.setView(index)
                 }
             }
@@ -348,6 +366,7 @@ Page {
         BoatView {
             id: boatCanvas
             anchors { left: parent.left; right: parent.right; top: boatBar.bottom; bottom: parent.bottom; margins: 6 }
+            visible: !page.overview
             view: Boat.viewById(page.boatView) || Boat.views[0]
             selection: page.location
             zoom: page.zoom
@@ -365,6 +384,23 @@ Page {
             }
         }
 
+        // The whole boat in 3D. Built the first time it's shown, then kept.
+        Loader {
+            id: boat3D
+            anchors { left: parent.left; right: parent.right; top: boatBar.bottom; bottom: parent.bottom; margins: 6 }
+            active: page.overview || status === Loader.Ready
+            source: "Boat3D.qml"
+            opacity: page.overview ? 1 : 0
+            visible: opacity > 0
+            Behavior on opacity { NumberAnimation { duration: 260 } }
+        }
+        Text {
+            anchors.centerIn: boat3D
+            visible: page.overview && boat3D.status === Loader.Error
+            text: qsTr("The 3D view needs Qt Quick 3D (qt6-qtquick3d)")
+            color: Theme.textDim; font.family: Theme.fontFamily; font.pixelSize: 14
+        }
+
         Text {
             anchors { left: parent.left; bottom: parent.bottom; margins: 16 }
             text: Boat.name + "  ·  " + Boat.specs
@@ -375,7 +411,7 @@ Page {
         Text {
             visible: !page.compact
             anchors { right: parent.right; bottom: parent.bottom; margins: 16 }
-            text: qsTr("hjkl  move around the boat  ·  Enter  folders  ·  f  hints  ·  1 2 3  views  ·  ?  all keys")
+            text: qsTr("hjkl  move around the boat  ·  Enter  folders  ·  f  hints  ·  0 1 2 3  views  ·  ?  all keys")
             color: Theme.textFaint
             font.family: Theme.fontFamily
             font.pixelSize: 11

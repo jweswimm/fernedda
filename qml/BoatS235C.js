@@ -180,7 +180,6 @@ const outside = {
         { style: "detail", d: seams(jibHead, tack, jibHead, jibClew, 13) + seams(mainHead, mainTack, mainHead, mainClew, 12) },
         { style: "house", d: S(pr, [[153.3, 393], [153.3, 392], [160, 382.7], [176.7, 379.3], [190, 376.7], [198.3, 375]])
                            + L(pr, [[303.3, 374.3], [323.3, 377.3], [355, 381.7], [366, 388], [366, 394], [153.3, 394]]).replace("M", "L") + "Z " },
-        { style: "canvas", d: G(pr, [[213, 375], [227, 346], [234, 346], [242, 366], [244, 375]]) },          // dodger
         { style: "hull", d: topsides },
         { style: "bottom", d: underbody + keel + rudder },
         { style: "stripe", d: L(pr, [[137, 397.3], [403.3, 395]]) },                                         // cove stripe
@@ -384,6 +383,14 @@ const below = {
 var name = "S2 35C"
 var specs = "35′2″ LOA · 11′6″ beam · masthead sloop"
 var views = [outside, deck, below]
+
+// The traced lines, for lofting the 3D model (BoatMesh.js).
+var lines = {
+    halfBreadth, hullTop, stem, counter, underbodyPx, keelPx, rudderPx, trunkPx, cockpitPx,
+    mainHead, mainTack, mainClew, jibHead, jibClew, tack, forestay, backstay,
+    roofPx: [[153.3, 393], [160, 382.7], [176.7, 379.3], [190, 376.7], [198.3, 375],   // cabin top, profile px
+             [303.3, 374.3], [323.3, 377.3], [355, 381.7], [366, 388]],
+}
 
 // ---- lookups -------------------------------------------------------------
 

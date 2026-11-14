@@ -51,6 +51,8 @@ qt_add_qml_module(fernedda
     qml/Chip.qml
     qml/BoatView.qml
     qml/BoatS235C.js
+    qml/Boat3D.qml
+    qml/BoatMesh.js
 )
 
 target_include_directories(fernedda PRIVATE src)
