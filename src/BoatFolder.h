@@ -4,6 +4,7 @@
 #include <QObject>
 #include <QStringList>
 #include <QTimer>
+#include <QVariantList>
 #include <QtQml/qqmlregistration.h>
 
 class QQmlEngine;
@@ -36,6 +37,9 @@ public:
     Q_INVOKABLE bool makeFolder(const QString &rel);
     // Files anywhere under a folder.
     Q_INVOKABLE int fileCount(const QString &rel) const;
+    // Every folder and file under a folder, parents before children:
+    // [{ path, name, dir, depth }] with depth 1 for direct children.
+    Q_INVOKABLE QVariantList entries(const QString &rel) const;
 
     // Paths: relative ↔ absolute ("" when outside the boat folder).
     Q_INVOKABLE QString absPath(const QString &rel) const;
@@ -52,6 +56,7 @@ private:
 
     QString m_root;
     QStringList m_files;       // relative to the root
+    QStringList m_dirs;        // relative to the root
     int m_revision = 0;
     QFileSystemWatcher m_watcher;
     QTimer m_rescan;

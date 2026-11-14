@@ -74,6 +74,43 @@ Item {
     readonly property real oy: (height - 28 - (b[3] - b[1]) * s) / 2 + b[3] * s
     function px(x) { return ox + x * s }
     function py(y) { return oy - y * s }
+
+    // Radial tree of a zone's folder, in pixels around the zone's point:
+    // { nodes: [{ x, y, dir, depth }], edges: "M … L …" }. Each node gets a
+    // slice of the circle sized by how many leaves hang under it.
+    function folderGraph(rel) {
+        const ring = d => d === 0 ? 0 : 15 + (d - 1) * 11
+        const rootNode = { path: rel, dir: true, depth: 0, kids: [] }
+        const byPath = { [rel]: rootNode }
+        for (const e of BoatFolder.entries(rel)) {
+            const n = { path: e.path, dir: e.dir, depth: e.depth, kids: [] }
+            byPath[e.path] = n
+            const parent = byPath[e.path.slice(0, e.path.lastIndexOf("/"))]
+            if (parent) parent.kids.push(n)
+        }
+        const leaves = n => n.leaves = n.kids.length ? n.kids.reduce((a, k) => a + leaves(k), 0) : 1
+        leaves(rootNode)
+
+        const nodes = []
+        let edges = ""
+        const f = v => Math.round(v * 10) / 10
+        const place = (n, a0, a1, px, py) => {
+            const a = (a0 + a1) / 2, r = ring(n.depth)
+            n.x = r * Math.cos(a); n.y = r * Math.sin(a)
+            if (n.depth > 0) edges += "M " + f(px) + " " + f(py) + " L " + f(n.x) + " " + f(n.y) + " "
+            nodes.push({ x: n.x, y: n.y, dir: n.dir, depth: n.depth })
+            let start = a0
+            for (const k of n.kids) {
+                const span = (a1 - a0) * k.leaves / n.leaves
+                place(k, start, start + span, n.x, n.y)
+                start += span
+            }
+        }
+        place(rootNode, -1.5 * Math.PI, 0.5 * Math.PI, 0, 0)  // a lone child points up
+        // Draw the root last so it sits on top of its edges.
+        nodes.push(nodes.shift())
+        return { nodes: nodes, edges: edges }
+    }
     function toBoat(p) { return [(p.x - ox) / s, (oy - p.y) / s] }
 
     // The zone folder the selection is in (or "").
@@ -138,8 +175,7 @@ Item {
         detail:    { fill: "transparent", stroke: Theme.textFaint, w: 1 },
         rig:       { fill: "transparent", stroke: Theme.textDim, w: 1 },
         spar:      { fill: Theme.textDim, stroke: "transparent", w: 0 },
-        sail:      { fill: Theme.alpha(Theme.text, 0.05), stroke: Theme.alpha(Theme.text, 0.3), w: 1 },
-        canvas:    { fill: Theme.alpha(Theme.textDim, 0.22), stroke: Theme.alpha(Theme.textDim, 0.6), w: 1 }
+        sail:      { fill: Theme.alpha(Theme.text, 0.05), stroke: Theme.alpha(Theme.text, 0.3), w: 1 }
     })
 
     Item {
@@ -201,31 +237,46 @@ Item {
             }
         }
 
-        // File counts per zone.
+        // Each zone's folder as a little node graph: the zone in the middle,
+        // its folders and files fanned out around it (a radial tree).
         Repeater {
             model: root.view.zones
-            Rectangle {
+            Item {
+                id: graph
                 required property var modelData
-                readonly property int n: BoatFolder.revision >= 0 ? BoatFolder.fileCount(modelData.path) : 0
-                readonly property bool show: n > 0 && root.hoverZone !== modelData.path && root.selectedZone !== modelData.path
-                x: root.px(modelData.at[0]) - width / 2
-                y: root.py(modelData.at[1]) - height / 2
-                width: Math.max(20, countText.implicitWidth + 10)
-                height: 20
-                radius: 10
-                color: Theme.alpha(Theme.accent, 0.9)
+                readonly property var g: BoatFolder.revision >= 0 ? root.folderGraph(modelData.path) : ({ nodes: [], edges: "" })
+                readonly property bool show: root.hoverZone !== modelData.path && root.selectedZone !== modelData.path
+                x: root.px(modelData.at[0])
+                y: root.py(modelData.at[1])
                 opacity: show ? 1 : 0
                 scale: show ? 1 : 0.6
                 Behavior on opacity { NumberAnimation { duration: Theme.fast } }
                 Behavior on scale { NumberAnimation { duration: Theme.normal; easing.type: Easing.OutBack } }
-                Text {
-                    id: countText
-                    anchors.centerIn: parent
-                    text: parent.n
-                    color: Theme.bg
-                    font.family: Theme.fontFamily
-                    font.pixelSize: 11
-                    font.weight: Font.Bold
+
+                Shape {
+                    preferredRendererType: Shape.CurveRenderer
+                    ShapePath {
+                        strokeColor: Theme.alpha(Theme.accent, 0.75)
+                        strokeWidth: 1.3
+                        fillColor: "transparent"
+                        capStyle: ShapePath.RoundCap
+                        PathSvg { path: graph.g.edges }
+                    }
+                }
+                Repeater {
+                    model: graph.g.nodes
+                    Rectangle {
+                        required property var modelData
+                        readonly property real d: modelData.depth === 0 ? 8 : modelData.dir ? 6 : 4
+                        x: modelData.x - d / 2
+                        y: modelData.y - d / 2
+                        width: d
+                        height: d
+                        radius: d / 2
+                        color: modelData.depth === 0 ? Theme.bg : modelData.dir ? Theme.accent : Theme.text
+                        border.width: modelData.depth === 0 ? 1.5 : 0
+                        border.color: Theme.accent
+                    }
                 }
             }
         }
