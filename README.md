@@ -8,9 +8,11 @@ Native Qt 6 / QML, made for a laptop now and a Raspberry Pi screen later.
   Click any card to zoom into its history (5 min to 6 h).
 - **Data**: every Signal K path the boat reports, live, with sparklines. Use it to check what a new sensor is sending.
 - **Notes**: in the boat folder itself, a slowly turning 3D model of the S2 35C. Go into a part of the boat, or
-  choose a view, for its drawing (outside profile, deck, below decks). Click a part
-  of the boat for its **Documentation**, **Plans** and **Research** folders (`boat/below/engine/Plans/`);
-  picking one, and creating it if it's missing, opens it in Neovim beside the drawing.
+  choose a view, for its drawing (outside profile, deck, below decks). Every part of the boat is a folder
+  (`boat/below/engine/`), shown on the drawing as a small graph of the folders and files inside it.
+  Tap a part (or press Enter on it) and Neovim comes up in a card over the drawing, with oil in that folder;
+  the drawing moves aside to stay clear of it.
+  From the card you can **rename** the part (it's the folder's name) or **redraw its border**.
   *Insert readings* stamps engine hours, battery and position into the file you're editing.
 - **Night / red night-vision / day** themes (top-right button): gruvbox dark and light, plus red. F11 toggles full screen.
 
@@ -18,16 +20,29 @@ With no server it runs a built-in **simulated boat**. Switch to a real server in
 
 ## Neovim in the app
 
-The Notes page has a Neovim pane: a real `nvim --embed` on the boat folder, with your config and
-plugins, drawn by the app itself, so it needs no terminal or window manager. It's linked both ways:
+The Notes page has Neovim in a card floating over the boat: a real `nvim --embed` on the boat folder,
+with your config and plugins, drawn by the app itself, so it needs no terminal or window manager.
+It comes up when you tap a part of the boat (or press Enter on one) and goes away with Esc, its ×, a tap on
+empty water, or `Ctrl+T` (which also brings it back, from anywhere). It's linked both ways:
 
 - move the cursor in oil and the app shows that part of the boat;
-- pick a part of the boat or a view (Outside, Deck, Below) in the app and oil moves to it (only while oil is showing; a file you're
-  editing is left alone). Picking a category always opens its folder; the file you were editing stays open.
+- tap a part of the boat and oil opens its folder; move around the boat or pick a view (Outside, Deck, Below)
+  and oil follows (only while oil is showing; a file you're editing is left alone);
+- rename a part's folder in oil and the part takes the new name (oil and the app always show the same name).
 
-`Alt+Tab` or `Ctrl+;` moves the keyboard between the pane and the app. Drag the gap beside the pane to resize it;
-`Ctrl+T` shows or hides it, from anywhere. Neovim closes with the app: if files are unsaved it asks first, in the pane, and Cancel
-keeps everything open. (Closing the window again while it's asking stops Neovim; recover from its swap files.)
+`Alt+Tab` or `Ctrl+;` moves the keyboard between the card and the app. Drag the card's left edge to resize it.
+Neovim closes with the app: if files are unsaved it asks first, in the card, and Cancel keeps everything open.
+(Closing the window again while it's asking stops Neovim; recover from its swap files.)
+
+**Touch mode** (on by default, `t` toggles) is for a touch screen: oil's files and folders become buttons you
+tap to open, the status line at the bottom goes up a folder (or back to the folder from a file), and the text
+is bigger with taller rows. The vim keys work as ever.
+
+**Changing parts of the boat**: the card's title bar has **Rename**, which renames the part's folder (oil
+follows), and **Redraw border**: tap the corners of the new outline on the drawing, then tap the first corner
+or *Done*. While drawing, scroll or pinch to zoom, drag to pan, *Fit* to go back; *Reset* restores the
+original outline. Borders and renamed folders are kept in `boat/.zones.json`; the drawing in
+`qml/BoatS235C.js` stays the original.
 
 The link is `nvim/lua/fernedda.lua`, loaded only into that nvim; your config is untouched.
 
@@ -40,9 +55,10 @@ Vim-style normal mode everywhere; typing in a text field is insert mode (Esc lea
 - `f` — hints: every clickable thing (and every part of the boat) gets a label; type it to click
 - `?` — all keys · `H` / `L` — previous / next page (views on Notes) · `Alt+Tab` or `Ctrl+;` — switch between Neovim and the app · `Ctrl+T` — show / hide Neovim
 - Notes: `h` `j` `k` `l` move to the part of the boat left / below / above / right ·
-  `Enter` show / hide its folders, then `d` `p` `r` open Documentation / Plans / Research ·
+  `Enter` open its folder in Neovim · `Esc` put Neovim away ·
   `Space` `h` or `-` back / up a folder, out to the whole boat · `0` the 3D model · `1` `2` `3`, `H` `L` or `gT` `gt` views · `z` zoom on / off ·
-  `i` insert readings
+  `t` touch mode on / off · `r` rename the part · `b` redraw its border · `i` insert readings
+- Drawing a border: tap corners · `u` undo · `+` / `-` zoom, `0` fit · `Enter` done · `Esc` cancel
 
 ## Build
 
@@ -69,18 +85,21 @@ cmake --build build      # also installs to ~/.local (FERNEDDA_AUTO_INSTALL)
 | `src/Simulator`     | Plausible sailboat that publishes standard Signal K paths |
 | `src/SignalKValue`  | QML handle on one path: `SignalKValue { path: "navigation.speedOverGround" }` |
 | `src/HistoryPlot`   | Time-series chart / sparkline |
-| `src/BoatFolder`    | The boat folder: makes and counts folders, watches for changes (the `BoatFolder` singleton) |
+| `src/BoatFolder`    | The boat folder: makes, lists and renames folders, watches for changes (the `BoatFolder` singleton) |
 | `src/NvimLink`      | Runs the embedded Neovim and speaks RPC with it (the `Nvim` singleton) |
-| `src/NvimView`      | The Neovim pane: draws its screen, sends it keys and mouse input |
+| `src/NvimView`      | Draws Neovim's screen (bigger rows in touch mode), sends it keys and mouse input |
 | `src/Msgpack`       | The MessagePack encoding that RPC uses |
 | `src/KeyRouter`     | Normal / insert mode keyboard (the `Keyboard` singleton) |
-| `nvim/lua/fernedda.lua` | The Neovim side of the link (oil cursor → app; reveal / open_folder / insert) |
+| `nvim/lua/fernedda.lua` | The Neovim side of the link (oil cursor, entries on screen, folder renames → app; reveal / open_folder / tap / insert) |
 | `qml/BoatS235C.js`  | The boat drawing and its tappable zones, as data in metres; edit to match your boat |
-| `qml/BoatView.qml`  | Renders one view of the boat, hit-tests zones, shows the category menu |
+| `qml/BoatView.qml`  | Renders one view of the boat with each zone's folder graph, hit-tests zones, draws new borders |
+| `qml/NotesPage.qml` | The Notes page: the drawing, the Neovim card, touch buttons, renaming |
 | `qml/BoatMesh.js`   | Lofts the 3D model from the lines in `BoatS235C.js` |
 | `qml/Boat3D.qml`    | Renders and turns the 3D model (Qt Quick 3D) |
 | `qml/`              | UI: `Theme`, `Units` (SI → knots/°C/…), cards, gauges, pages |
 
 To check a layout without a display:
 `QT_QPA_PLATFORM=offscreen FERNEDDA_SCREENSHOT=shot.png ./build/fernedda`
-(add `FERNEDDA_KEYS="f s f"` to type keys first). The offscreen platform can't draw the 3D model; that takes a real GPU context.
+(add `FERNEDDA_KEYS="f s f"` to type keys first). The offscreen platform uses software rendering: it can't draw
+the 3D model and can hide GPU-only problems. For a true picture, run on a headless compositor instead, e.g.
+`WLR_BACKENDS=headless sway` and then `QT_QPA_PLATFORM=wayland` with the same variables.
