@@ -403,8 +403,11 @@ var zoneById = {}
 var zoneByPath = {}
 function indexZones() {
     for (const k in zoneByPath) delete zoneByPath[k]
-    for (const v of views)
+    for (const v of views) {
         for (const z of v.zones) { z.path = v.id + "/" + z.folder; zoneByPath[z.path] = z }
+        for (const l of v.layers || [])
+            for (const z of l.zones) zoneByPath[z.path] = z
+    }
 }
 for (const v of views)
     for (const z of v.zones) {
@@ -479,8 +482,16 @@ for (const v of views)
 // ---- your edits ------------------------------------------------------------
 
 // Borders and folders you've changed, kept in boat/.zones.json as
-//   { "<view>/<id>": { points: [[x, y], …], folder: "…" } }
+//   { "<view>/<id>": { points: [[x, y], …], folder: "…" },
+//     "layers": { "<view>": [ { folder: "…", zones: [ { folder: "…", points: […], line: true? } ] } ] } }
 // (metres, like everything here). The drawing above stays the original.
+//
+// Layers: more sets of parts over the same drawing of a view, e.g. an
+// "electrical" layer over Below. A layer is a folder in the view's folder
+// (boat/below/electrical/) and its parts are folders in that; they're yours
+// entirely (drawn in the app), where the view's own parts ("Main") come from
+// the drawing above. A layer's part is an area (a closed outline) or, with
+// `line`, a line: an open run of segments, like a wire or a hose.
 var original = {}
 for (const v of views)
     for (const z of v.zones) original[z.key] = { d: z.d, at: z.at }
@@ -492,6 +503,35 @@ function setShape(z, d) {
     for (const p of z.polys)
         for (const q of p) { x0 = Math.min(x0, q[0]); y0 = Math.min(y0, q[1]); x1 = Math.max(x1, q[0]); y1 = Math.max(y1, q[1]) }
     z.bbox = [x0, y0, x1, y1]
+}
+
+// A line part: no area, hit within a few pixels of its segments.
+function setLineShape(z, pts) {
+    z.d = line(pts)
+    z.polys = []
+    z.segs = pts
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity
+    for (const q of pts) { x0 = Math.min(x0, q[0]); y0 = Math.min(y0, q[1]); x1 = Math.max(x1, q[0]); y1 = Math.max(y1, q[1]) }
+    z.bbox = [x0, y0, x1, y1]
+}
+
+// The point halfway along a line, where its label goes.
+function halfway(pts) {
+    let total = 0
+    for (let i = 1; i < pts.length; ++i) total += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1])
+    let left = total / 2
+    for (let i = 1; i < pts.length; ++i) {
+        const a = pts[i - 1], b = pts[i], d = Math.hypot(b[0] - a[0], b[1] - a[1])
+        if (d >= left && d > 0) return [a[0] + (b[0] - a[0]) * left / d, a[1] + (b[1] - a[1]) * left / d]
+        left -= d
+    }
+    return pts[0]
+}
+
+function segmentDistance(p, a, b) {
+    const dx = b[0] - a[0], dy = b[1] - a[1], len2 = dx * dx + dy * dy
+    const t = len2 ? Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len2)) : 0
+    return Math.hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dy)
 }
 
 // Where a polygon's label goes: its centroid (the middle of its corners if
@@ -522,13 +562,56 @@ function applyEdits(edits) {
                 z.at = o.at
             }
         }
+    const layers = edits.layers || {}
+    for (const v of views)
+        v.layers = (layers[v.id] || []).map(l => {
+            const path = v.id + "/" + l.folder
+            return {
+                folder: l.folder, name: l.folder, view: v.id, path: path,
+                zones: (l.zones || []).filter(q => q.points && q.points.length >= (q.line ? 2 : 3)).map(q => {
+                    const z = { id: q.folder, folder: q.folder, name: q.folder, view: v.id, layer: l.folder,
+                                key: path + "/" + q.folder, path: path + "/" + q.folder, line: !!q.line }
+                    if (z.line) {
+                        setLineShape(z, q.points)
+                        z.at = halfway(q.points)
+                    } else {
+                        setShape(z, poly(q.points))
+                        z.at = centroid(q.points)
+                    }
+                    return z
+                })
+            }
+        })
     indexZones()
 }
 
-// Topmost zone at a point in view coordinates, or null.
-function hit(view, x, y) {
-    for (let i = view.zones.length - 1; i >= 0; --i) {
-        const z = view.zones[i]
+function layerByPath(path) {
+    const parts = path.split("/")
+    const v = viewById(parts[0])
+    return v && parts.length >= 2 ? (v.layers || []).find(l => l.folder === parts[1]) || null : null
+}
+
+// The part of the boat a folder path is in (the path itself, or a parent), or null.
+function zoneOf(path) {
+    const parts = path ? path.split("/") : []
+    for (let n = Math.min(parts.length, 3); n >= 2; --n) {
+        const z = zoneByPath[parts.slice(0, n).join("/")]
+        if (z) return z
+    }
+    return null
+}
+
+// Topmost zone at a point in view coordinates, or null. Lines count within
+// `reach` (metres) of them, and win over areas they cross.
+function hit(zones, x, y, reach) {
+    for (let i = zones.length - 1; i >= 0; --i) {
+        const z = zones[i]
+        if (z.line)
+            for (let k = 1; k < z.segs.length; ++k)
+                if (segmentDistance([x, y], z.segs[k - 1], z.segs[k]) <= (reach || 0)) return z
+    }
+    for (let i = zones.length - 1; i >= 0; --i) {
+        const z = zones[i]
         for (const p of z.polys) if (inside([x, y], p)) return z
     }
     return null

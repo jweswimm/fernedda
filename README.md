@@ -22,8 +22,8 @@ With no server it runs a built-in **simulated boat**. Switch to a real server in
 
 The Notes page has Neovim in a card floating over the boat: a real `nvim --embed` on the boat folder,
 with your config and plugins, drawn by the app itself, so it needs no terminal or window manager.
-It comes up when you tap a part of the boat (or press Enter on one) and goes away with Esc, its ×, a tap on
-empty water, or `Ctrl+T` (which also brings it back, from anywhere). It's linked both ways:
+It comes up when you tap a part of the boat (or press Enter on one) and goes away with Esc (once you're back
+out at the whole view), its ×, a tap on empty water, or `Ctrl+T` (which also brings it back, from anywhere). It's linked both ways:
 
 - move the cursor in oil and the app shows that part of the boat;
 - tap a part of the boat and oil opens its folder; move around the boat or pick a view (Outside, Deck, Below)
@@ -44,6 +44,13 @@ or *Done*. While drawing, scroll or pinch to zoom, drag to pan, *Fit* to go back
 original outline. Borders and renamed folders are kept in `boat/.zones.json`; the drawing in
 `qml/BoatS235C.js` stays the original.
 
+**Layers**: more sets of parts over the same drawing of a view, e.g. an *electrical* layer over Below. The bar at
+the bottom of the drawing switches between **Main** (the drawing's own parts) and your layers; **+ Layer** adds
+one, and in a layer **+ Area** (`n`) or **+ Line** (`N`) draws a new part, which then gets a folder and asks for
+its name. An area is a closed outline; a line is an open run of segments (a wire, a hose), tapped anywhere along it.
+A layer is a folder in the view's folder and its parts are folders in that (`boat/below/electrical/panel/`);
+renaming either in oil is followed. Layers live in `boat/.zones.json` too.
+
 The link is `nvim/lua/fernedda.lua`, loaded only into that nvim; your config is untouched.
 
 The boat folder is `boat/` in this repo; set `FERNEDDA_BOAT_DIR` to use another.
@@ -55,9 +62,9 @@ Vim-style normal mode everywhere; typing in a text field is insert mode (Esc lea
 - `f` — hints: every clickable thing (and every part of the boat) gets a label; type it to click
 - `?` — all keys · `H` / `L` — previous / next page (views on Notes) · `Alt+Tab` or `Ctrl+;` — switch between Neovim and the app · `Ctrl+T` — show / hide Neovim
 - Notes: `h` `j` `k` `l` move to the part of the boat left / below / above / right ·
-  `Enter` open its folder in Neovim · `Esc` put Neovim away ·
+  `Enter` open its folder in Neovim · `Esc` back out to the whole view, then put Neovim away ·
   `Space` `h` or `-` back / up a folder, out to the whole boat · `0` the 3D model · `1` `2` `3`, `H` `L` or `gT` `gt` views · `z` zoom on / off ·
-  `t` touch mode on / off · `r` rename the part · `b` redraw its border · `i` insert readings
+  `t` touch mode on / off · `r` rename the part · `b` redraw its border · `n` / `N` new area / line (in a layer) · `i` insert readings
 - Drawing a border: tap corners · `u` undo · `+` / `-` zoom, `0` fit · `Enter` done · `Esc` cancel
 
 ## Build
@@ -93,7 +100,7 @@ cmake --build build      # also installs to ~/.local (FERNEDDA_AUTO_INSTALL)
 | `nvim/lua/fernedda.lua` | The Neovim side of the link (oil cursor, entries on screen, folder renames → app; reveal / open_folder / tap / insert) |
 | `qml/BoatS235C.js`  | The boat drawing and its tappable zones, as data in metres; edit to match your boat |
 | `qml/BoatView.qml`  | Renders one view of the boat with each zone's folder graph, hit-tests zones, draws new borders |
-| `qml/NotesPage.qml` | The Notes page: the drawing, the Neovim card, touch buttons, renaming |
+| `qml/NotesPage.qml` | The Notes page: the drawing, the Neovim card, touch buttons, renaming, layers |
 | `qml/BoatMesh.js`   | Lofts the 3D model from the lines in `BoatS235C.js` |
 | `qml/Boat3D.qml`    | Renders and turns the 3D model (Qt Quick 3D) |
 | `qml/`              | UI: `Theme`, `Units` (SI → knots/°C/…), cards, gauges, pages |

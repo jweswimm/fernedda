@@ -28,6 +28,11 @@ Page {
     property int zoneRev: 0               // bumps when they change
     property string drawing: ""           // zone path whose border is being drawn
     property bool renaming: false         // the card's title is a name field
+    property bool addingLayer: false      // the layer bar's name field is up
+    // The layers of the view on screen, and the one you're in (null: Main, the drawing's own parts).
+    readonly property var viewLayers: { const v = zoneRev >= 0 ? Boat.viewById(boatView) : null; return v && v.layers ? v.layers : [] }
+    readonly property var curLayer: zoneRev >= 0 && !overview ? Boat.layerByPath(location) : null
+    readonly property var shownZones: curLayer ? curLayer.zones : (Boat.viewById(boatView) || Boat.views[0]).zones
     Settings {
         category: "notes"
         property alias boatView: page.boatView
@@ -41,10 +46,10 @@ Page {
 
     Component.onCompleted: {
         loadZoneEdits()                 // first: zones may live in renamed folders
-        const zones = []
+        const folders = Object.keys(Boat.zoneByPath)
         for (const v of Boat.views)
-            for (const z of v.zones) zones.push(z.path)
-        BoatFolder.setZones(zones)
+            for (const l of v.layers) folders.push(l.path)
+        BoatFolder.setZones(folders)
         if (location && !BoatFolder.isFolder(location)) location = ""
         overview = !location.includes("/")
     }
@@ -63,7 +68,7 @@ Page {
         if (!loc || zoneRev < 0) return null
         const parts = loc.split("/")
         const v = Boat.viewById(parts[0])
-        const z = parts.length >= 2 ? Boat.zoneByPath[parts[0] + "/" + parts[1]] : null
+        const z = Boat.zoneOf(loc)
         // Folder names as they are: what you see is what's on disk (and in oil).
         const crumbs = [v ? v.label : parts[0]]
         for (let i = 1; i < parts.length; ++i) crumbs.push(parts[i])
@@ -96,21 +101,23 @@ Page {
             if (!Nvim.running && nvimView.activeFocus) Keyboard.release()
             if (!Nvim.running) page.tileState = null
         }
-        // Oil renamed a folder. If it's a part of the boat's (renamed within its
-        // view's folder), the part follows it; a move elsewhere leaves the part
-        // with a fresh empty folder under its old name.
+        // Oil renamed a folder. If it's a part of the boat's or a layer's
+        // (renamed where it is), that follows it; a move elsewhere leaves a
+        // fresh empty folder under the old name.
         function onMoved(json) {
             let m
             try { m = JSON.parse(json) } catch (e) { return }
             const src = BoatFolder.relPath(m.src), dest = BoatFolder.relPath(m.dest)
             const z = Boat.zoneByPath[src]
-            if (!z || !dest || dest === ".") return
-            const slash = dest.lastIndexOf("/")
-            if (slash < 0 || dest.slice(0, slash) !== z.view) {
+            const l = z ? null : Boat.layerByPath(src)
+            if ((!z && !(l && l.path === src)) || !dest || dest === ".") return
+            const parent = p => p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : ""
+            if (parent(dest) !== parent(src)) {
                 BoatFolder.makeFolder(src)
                 return
             }
-            page.moveZone(src, dest)
+            if (z) page.moveZone(src, dest)
+            else page.moveLayer(src, dest)
         }
         function onTiles(json) {
             try { page.tileState = JSON.parse(json) } catch (e) { page.tileState = null }
@@ -133,26 +140,100 @@ Page {
         Boat.applyEdits(zoneEdits)
         zoneRev++
     }
-    // A zone's stable key ("<view>/<id>") from its folder path.
-    function zoneKey(path) { const z = Boat.zoneByPath[path]; return z ? z.key : "" }
-    // Change one zone's entry ({ name } / { points } / { folder }; null drops
-    // that field) and save. `path` is the zone's folder path.
-    function editZone(path, patch) {
-        path = zoneKey(path)
-        if (!path) return
-        const all = Object.assign({}, zoneEdits)
-        const e = Object.assign({}, all[path] || {})
-        delete e.name                   // names are folder names now
-        for (const k in patch) {
-            if (patch[k] === null) delete e[k]
-            else e[k] = patch[k]
-        }
-        if (Object.keys(e).length) all[path] = e
-        else delete all[path]
+    function saveEdits(all) {
         BoatFolder.writeText(editsFile, JSON.stringify(all, null, 2) + "\n")
         zoneEdits = all
         Boat.applyEdits(zoneEdits)
         zoneRev++
+    }
+    function cloneEdits() { return JSON.parse(JSON.stringify(zoneEdits)) }
+    function layerEntry(all, view, folder) {
+        if (!all.layers) all.layers = {}
+        if (!all.layers[view]) all.layers[view] = []
+        return all.layers[view].find(l => l.folder === folder) || null
+    }
+    // Change one part's entry ({ points } / { folder }; null drops that field,
+    // back to the drawing's) and save. `path` is the part's folder path.
+    function editZone(path, patch) {
+        const z = Boat.zoneByPath[path]
+        if (!z) return
+        const all = cloneEdits()
+        if (z.layer) {
+            // A layer's part is all yours: it always has its folder and border.
+            const l = layerEntry(all, z.view, z.layer)
+            const e = l ? l.zones.find(q => q.folder === z.folder) : null
+            if (!e) return
+            for (const k in patch) if (patch[k] !== null) e[k] = patch[k]
+        } else {
+            const e = all[z.key] || {}
+            delete e.name                   // names are folder names now
+            for (const k in patch) {
+                if (patch[k] === null) delete e[k]
+                else e[k] = patch[k]
+            }
+            if (Object.keys(e).length) all[z.key] = e
+            else delete all[z.key]
+        }
+        saveEdits(all)
+    }
+    // A path moved: follow it if we're in (or drawing) there.
+    function followMove(from, to) {
+        if (location === from || location.startsWith(from + "/")) location = to + location.slice(from.length)
+        if (drawing === from || drawing.startsWith(from + "/")) drawing = to + drawing.slice(from.length)
+    }
+
+    // ---- layers ----------------------------------------------------------------
+
+    // Add a layer to the view on screen: a folder in it, which you then fill
+    // with parts. False if the name can't be used.
+    function addLayer(name) {
+        name = name.trim()
+        const path = boatView + "/" + name
+        if (!name || name === "." || name === ".." || name.includes("/") || Boat.zoneByPath[path] || Boat.layerByPath(path))
+            return false
+        if (!BoatFolder.makeFolder(path)) return false
+        const all = cloneEdits()
+        layerEntry(all, boatView, "")       // makes the list
+        all.layers[boatView].push({ folder: name, zones: [] })
+        saveEdits(all)
+        overview = false
+        setLocation(path)
+        return true
+    }
+    // A layer's folder was renamed (from oil).
+    function moveLayer(from, to) {
+        const l = Boat.layerByPath(from)
+        if (!l) return
+        const all = cloneEdits()
+        const e = layerEntry(all, l.view, l.folder)
+        if (!e) return
+        e.folder = to.slice(to.lastIndexOf("/") + 1)
+        saveEdits(all)
+        followMove(from, to)
+    }
+    // Draw a new part in the layer you're in, an area or (`line`) a line;
+    // Done gives it a folder and asks for a name.
+    function startNewPart(line) {
+        if (!curLayer) return
+        renaming = false
+        if (nvimView.activeFocus) Keyboard.release()
+        drawing = (line ? "newline:" : "new:") + curLayer.path
+    }
+    function addPart(layerPath, points, line) {
+        const l = Boat.layerByPath(layerPath)
+        if (!l) return
+        const base = line ? "line" : "part"
+        let name = base, n = 2
+        while (BoatFolder.isFolder(layerPath + "/" + name)) name = base + "-" + n++
+        if (!BoatFolder.makeFolder(layerPath + "/" + name)) return
+        const all = cloneEdits()
+        const e = layerEntry(all, l.view, l.folder)
+        if (!e) return
+        e.zones.push(line ? { folder: name, points: points, line: true } : { folder: name, points: points })
+        saveEdits(all)
+        setLocation(layerPath + "/" + name, true)
+        openHere()
+        renameField.begin()                 // name it right away
     }
     // The zone the card is on (a path, or "").
     readonly property string cardZone: { const i = locInfo(location); return i ? i.zone : "" }
@@ -170,16 +251,14 @@ Page {
         if (Nvim.running) Nvim.openFolder(BoatFolder.absPath(location))
         return true
     }
-    // A zone's folder moved from `from` to `to` (both "<view>/<folder>"):
+    // A part's folder was renamed from `from` to `to` (same parent):
     // remember it, and follow it if we're in there.
     function moveZone(from, to) {
         const z = Boat.zoneByPath[from]
         if (!z) return
         const folder = to.slice(to.lastIndexOf("/") + 1)
-        const wasHere = location === from || location.startsWith(from + "/")
-        editZone(from, { folder: folder === z.id ? null : folder })
-        if (wasHere) location = to + location.slice(from.length)
-        if (drawing === from) drawing = to
+        editZone(from, { folder: z.layer || folder !== z.id ? folder : null })
+        followMove(from, to)
     }
     function startDrawing() {
         if (!cardZone) return
@@ -189,8 +268,11 @@ Page {
         drawing = cardZone
     }
     function finishDrawing(points) {
-        editZone(drawing, { points: points })
+        const d = drawing
         drawing = ""
+        if (d.startsWith("new:")) addPart(d.slice(4), points, false)
+        else if (d.startsWith("newline:")) addPart(d.slice(8), points, true)
+        else editZone(d, { points: points })
     }
 
     // ---- the Neovim card ------------------------------------------------------
@@ -282,9 +364,10 @@ Page {
     readonly property var keymap: [
         ["h j k l", qsTr("move to the part of the boat left / below / above / right")],
         ["Enter", qsTr("open the part's folder in Neovim")],
-        ["Esc", qsTr("put Neovim away")],
+        ["Esc", qsTr("back out to the whole view, then put Neovim away")],
         ["r", qsTr("rename the part (its folder)")],
         ["b", qsTr("redraw the part's border: tap corners · u undo · + - zoom, 0 fit, drag to pan · Enter done · Esc cancel")],
+        ["n / N", qsTr("in a layer: draw a new area / line")],
         ["Space h, - / Backspace", qsTr("back / up a folder, out to the whole boat")],
         ["0", qsTr("the whole boat in 3D")],
         ["1 2 3", qsTr("Outside / Deck / Below")], ["H / L, gT / gt", qsTr("previous / next view")],
@@ -309,6 +392,8 @@ Page {
         case "Enter": openHere(); return true
         case "r": if (cardZone) { paneShown = true; renameField.begin() } return true
         case "b": startDrawing(); return true
+        case "n": startNewPart(false); return true
+        case "N": startNewPart(true); return true
         case "Spaceh": case "-": case "Backspace": up(); return true
         case "0": showOverview(); return true
         case "1": setView(0); return true
@@ -320,6 +405,12 @@ Page {
         case "t": tiles = !tiles; return true
         case "i": insertReadings(); return true
         case "Escape":
+            // On a part of the boat: back out to the whole view (or layer), as
+            // if you'd tapped its chip. Already there: put Neovim away.
+            if (!overview) {
+                const top = curLayer ? curLayer.path : boatView
+                if (location.startsWith(top + "/")) { setLocation(top); return true }
+            }
             if (paneShown) { closePane(); return true }
             return false
         }
@@ -433,7 +524,14 @@ Page {
             zoom: page.zoom
             rev: page.zoneRev
             drawZone: page.drawing
-            drawEdited: { const e = page.zoneEdits[page.zoneKey(page.drawing)]; return !!e && !!e.points }
+            zones: page.shownZones
+            drawLine: page.drawing.startsWith("newline:") || !!(page.zoneRev >= 0 && Boat.zoneByPath[page.drawing] && Boat.zoneByPath[page.drawing].line)
+            // Reset is for the drawing's own parts (a layer's have no original).
+            drawEdited: {
+                const z = page.zoneRev >= 0 ? Boat.zoneByPath[page.drawing] : null
+                const e = z && !z.layer ? page.zoneEdits[z.key] : null
+                return !!e && !!e.points
+            }
             onDrawn: points => page.finishDrawing(points)
             onDrawCancelled: page.drawing = ""
             onDrawReset: { page.editZone(page.drawing, { points: null }); page.drawing = "" }
@@ -447,7 +545,8 @@ Page {
                     page.setLocation(loc, true)              // openHere moves oil
                     page.openHere()
                 } else {
-                    page.setLocation("")
+                    // Empty water: nothing selected, but stay in the layer you're in.
+                    page.setLocation(page.curLayer ? page.curLayer.path : "")
                     page.closePane()
                 }
             }
@@ -474,6 +573,91 @@ Page {
             visible: page.overview && boat3D.status === Loader.Error
             text: qsTr("The 3D view needs Qt Quick 3D (qt6-qtquick3d)")
             color: Theme.textDim; font.family: Theme.fontFamily; font.pixelSize: 14
+        }
+
+        // Layers of this view: Main (the drawing's own parts), yours, and adding
+        // one (a name field).
+        Row {
+            id: layerBar
+            anchors { left: parent.left; bottom: parent.bottom; leftMargin: 14; bottomMargin: 36 }
+            spacing: 6
+            visible: !page.overview && !page.drawing
+            Chip {
+                text: qsTr("Main")
+                icon: "boat"
+                checked: !page.curLayer
+                onClicked: page.setView(Boat.views.findIndex(v => v.id === page.boatView))
+            }
+            Repeater {
+                model: page.viewLayers
+                Chip {
+                    required property var modelData
+                    text: modelData.name
+                    icon: "list"
+                    checked: !!page.curLayer && page.curLayer.path === modelData.path
+                    onClicked: page.setLocation(modelData.path)
+                }
+            }
+            Chip {
+                visible: !page.addingLayer
+                icon: "plus"
+                text: qsTr("Layer")
+                onClicked: { page.addingLayer = true; Qt.callLater(() => layerField.begin()) }
+            }
+            // New layer's name: Enter adds it, Esc or tapping away cancels.
+            Rectangle {
+                visible: page.addingLayer
+                width: 180; height: 30; radius: 15
+                color: Theme.surfaceHi
+                border.color: layerField.bad ? Theme.danger : Theme.accent
+                TextInput {
+                    id: layerField
+                    anchors { fill: parent; leftMargin: 12; rightMargin: 12 }
+                    verticalAlignment: TextInput.AlignVCenter
+                    clip: true
+                    color: Theme.text
+                    font.family: Theme.fontFamily
+                    font.pixelSize: 13
+                    property bool bad: false
+                    onTextChanged: bad = false
+                    function begin() { text = ""; bad = false; forceActiveFocus() }
+                    function end() {
+                        page.addingLayer = false
+                        if (activeFocus) Keyboard.release()
+                    }
+                    Text {
+                        visible: !parent.text
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: qsTr("Layer name")
+                        color: Theme.textFaint
+                        font: parent.font
+                    }
+                    Keys.onReturnPressed: if (page.addLayer(text)) end(); else bad = true
+                    Keys.onEnterPressed: if (page.addLayer(text)) end(); else bad = true
+                    Keys.onEscapePressed: event => { end(); event.accepted = false }
+                    onActiveFocusChanged: if (!activeFocus && page.addingLayer) page.addingLayer = false
+                }
+            }
+        }
+        // In a layer: draw a new area or line. Bottom right, left of the Neovim card when it's up.
+        Row {
+            anchors { right: parent.right; bottom: parent.bottom; bottomMargin: 36 }
+            anchors.rightMargin: page.paneShown ? nvimPane.width + 28 : 14
+            Behavior on anchors.rightMargin { NumberAnimation { duration: 320; easing.type: Easing.OutCubic } }
+            spacing: 6
+            visible: !!page.curLayer && !page.drawing
+            Chip {
+                icon: "plus"
+                text: qsTr("Area")
+                checked: true
+                onClicked: page.startNewPart(false)
+            }
+            Chip {
+                icon: "plus"
+                text: qsTr("Line")
+                checked: true
+                onClicked: page.startNewPart(true)
+            }
         }
 
         Text {

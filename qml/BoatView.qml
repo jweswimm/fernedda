@@ -17,10 +17,12 @@ Item {
     id: root
     property var view: Boat.views[0]
     property string selection: ""       // folder path, e.g. "below/engine/Plans"
+    property var zones: view.zones      // the parts shown: the view's own, or a layer's
     signal selected(string location)
     // Bumps when zones change (renamed, redrawn), so bindings re-read them.
     property int rev: 0
     property string drawZone: ""          // zone path whose border is being drawn
+    property bool drawLine: false         // drawing a line (open), not an area
     property bool drawEdited: false       // it has a border of yours (offer Reset)
     property var drawPts: []              // corners so far, metres
     property point drawHover: Qt.point(-1, -1)
@@ -30,7 +32,8 @@ Item {
     // Leaving draw mode puts the camera back where it belongs.
     onDrawZoneChanged: { drawPts = []; if (!drawZone) aim() }
     function undoPoint() { drawPts = drawPts.slice(0, -1) }
-    function finish() { if (drawPts.length >= 3) drawn(drawPts) }
+    readonly property int drawMin: drawLine ? 2 : 3
+    function finish() { if (drawPts.length >= drawMin) drawn(drawPts) }
     // Pixels on the right covered by something floating over the view; the
     // boat fits (and zooms) in the space left of it.
     property real reserveRight: 0
@@ -150,13 +153,12 @@ Item {
     function toBoat(p) { return [(p.x - ox) / s, (oy - p.y) / s] }
 
     // The zone folder the selection is in (or "").
-    readonly property var selParts: selection ? selection.split("/") : []
-    readonly property string selectedZone: selParts.length >= 2 && Boat.zoneByPath[selParts[0] + "/" + selParts[1]] ? selParts[0] + "/" + selParts[1] : ""
+    readonly property string selectedZone: { const z = rev >= 0 ? Boat.zoneOf(selection) : null; return z ? z.path : "" }
     property string hoverZone: ""
 
     // Things hint mode can label: every zone in this view.
     function hintTargets() {
-        return view.zones.map(z => ({ item: root, x: px(z.at[0]), y: py(z.at[1]), activate: () => root.selected(z.path) }))
+        return zones.map(z => ({ item: root, x: px(z.at[0]), y: py(z.at[1]), activate: () => root.selected(z.path) }))
     }
 
     // hjkl: the nearest part of this view in a direction
@@ -164,7 +166,7 @@ Item {
     // from the middle of the view when nothing here is selected.
     function neighbor(dir) {
         const d = ({ h: [-1, 0], l: [1, 0], k: [0, 1], j: [0, -1] })[dir]
-        const places = view.zones.map(z => ({ path: z.path, x: z.at[0], y: z.at[1] }))
+        const places = zones.map(z => ({ path: z.path, x: z.at[0], y: z.at[1] }))
         const here = places.find(q => q.path === selectedZone)
         const vb = view.bounds
         const p = here ? [here.x, here.y] : [(vb[0] + vb[2]) / 2, (vb[1] + vb[3]) / 2]
@@ -185,7 +187,7 @@ Item {
 
     function zoneAt(p) {
         const m = toBoat(p)
-        const z = Boat.hit(view, m[0], m[1])
+        const z = Boat.hit(zones, m[0], m[1], 12 / s)     // lines: within 12 px
         return z ? z.path : ""
     }
 
@@ -238,9 +240,9 @@ Item {
             }
         }
 
-        // Zones: invisible until hovered or selected.
+        // Zones: invisible until hovered or selected. Lines always show, faintly.
         Repeater {
-            model: root.rev >= 0 ? root.view.zones.slice() : []
+            model: root.rev >= 0 ? root.zones.slice() : []
             Shape {
                 id: zoneShape
                 required property var modelData
@@ -248,12 +250,15 @@ Item {
                 readonly property bool hot: root.hoverZone === modelData.path
                 anchors.fill: parent
                 preferredRendererType: Shape.CurveRenderer
+                readonly property bool line: !!modelData.line
                 ShapePath {
-                    fillColor: zoneShape.sel ? Theme.alpha(Theme.accent, 0.22 + 0.08 * pulse.v)
+                    fillColor: zoneShape.line ? "transparent"
+                             : zoneShape.sel ? Theme.alpha(Theme.accent, 0.22 + 0.08 * pulse.v)
                              : zoneShape.hot ? Theme.alpha(Theme.accent, 0.14) : Theme.alpha(Theme.accent, 0)
-                    strokeColor: zoneShape.sel ? Theme.accent : zoneShape.hot ? Theme.alpha(Theme.accent, 0.7)
-                               : Theme.alpha(Theme.accent, hover.hovered ? 0.16 : 0)
-                    strokeWidth: zoneShape.sel ? 1.8 : 1.2
+                    strokeColor: zoneShape.sel ? Theme.accent : zoneShape.hot ? Theme.alpha(Theme.accent, 0.8)
+                               : Theme.alpha(Theme.accent, zoneShape.line ? 0.45 : hover.hovered ? 0.16 : 0)
+                    strokeWidth: zoneShape.line ? (zoneShape.sel ? 4 + pulse.v : zoneShape.hot ? 4 : 3) : zoneShape.sel ? 1.8 : 1.2
+                    capStyle: ShapePath.RoundCap
                     fillRule: ShapePath.WindingFill
                     joinStyle: ShapePath.RoundJoin
                     Behavior on fillColor { ColorAnimation { duration: Theme.fast } }
@@ -276,7 +281,7 @@ Item {
         // Each zone's folder as a little node graph: the zone in the middle,
         // its folders and files fanned out around it (a radial tree).
         Repeater {
-            model: root.rev >= 0 ? root.view.zones.slice() : []
+            model: root.rev >= 0 ? root.zones.slice() : []
             Item {
                 id: graph
                 required property var modelData
@@ -372,11 +377,17 @@ Item {
     TapHandler {
         // Tapping the part you're in keeps you there (a double-click is just
         // two taps); only empty water goes back to the whole boat.
+        // Whether this press began in draw mode. The tap on a button that
+        // starts drawing (+ Part, Redraw border) can land here too, after the
+        // button has turned drawing on; it isn't a corner.
+        property bool pressedDrawing: false
+        onPressedChanged: if (pressed) pressedDrawing = !!root.drawZone
         onTapped: ev => {
             if (!root.drawZone) { root.selected(root.zoneAt(ev.position)); return }
+            if (!pressedDrawing) return
             // Drawing: tapping near the first corner closes the shape.
             const pts = root.drawPts
-            if (pts.length >= 3 && Math.hypot(ev.position.x - root.px(pts[0][0]), ev.position.y - root.py(pts[0][1])) < 18) {
+            if (!root.drawLine && pts.length >= 3 && Math.hypot(ev.position.x - root.px(pts[0][0]), ev.position.y - root.py(pts[0][1])) < 18) {
                 root.finish()
                 return
             }
@@ -434,7 +445,7 @@ Item {
             ShapePath {
                 strokeColor: Theme.accent
                 strokeWidth: 2
-                fillColor: Theme.alpha(Theme.accent, root.drawPts.length >= 3 ? 0.15 : 0)
+                fillColor: Theme.alpha(Theme.accent, !root.drawLine && root.drawPts.length >= 3 ? 0.15 : 0)
                 joinStyle: ShapePath.RoundJoin
                 capStyle: ShapePath.RoundCap
                 PathSvg {
@@ -462,7 +473,7 @@ Item {
                         let d = ""
                         if (root.drawHover.x >= 0)
                             d += "M " + root.px(last[0]) + " " + root.py(last[1]) + " L " + root.drawHover.x + " " + root.drawHover.y
-                        if (p.length >= 3)
+                        if (p.length >= 3 && !root.drawLine)
                             d += " M " + root.px(last[0]) + " " + root.py(last[1]) + " L " + root.px(first[0]) + " " + root.py(first[1])
                         return d
                     }
@@ -475,7 +486,7 @@ Item {
                 required property var modelData
                 required property int index
                 // The first corner is bigger: tap it to close the border.
-                readonly property real d: index === 0 && root.drawPts.length >= 3 ? 16 : 9
+                readonly property real d: index === 0 && !root.drawLine && root.drawPts.length >= 3 ? 16 : 9
                 x: root.px(modelData[0]) - d / 2
                 y: root.py(modelData[1]) - d / 2
                 width: d; height: d; radius: d / 2
@@ -505,8 +516,11 @@ Item {
                     rightPadding: 6
                     leftPadding: 6
                     readonly property var zone: root.rev >= 0 ? Boat.zoneByPath[root.drawZone] : null
-                    text: root.drawPts.length >= 3 ? qsTr("Tap the first corner, or Done")
-                        : qsTr("Tap the corners of %1").arg(zone ? zone.name : "")
+                    text: root.drawLine
+                        ? (root.drawPts.length >= 2 ? qsTr("Tap more points, or Done")
+                                                    : qsTr("Tap the points of %1").arg(zone ? zone.name : qsTr("the new line")))
+                        : root.drawPts.length >= 3 ? qsTr("Tap the first corner, or Done")
+                        : qsTr("Tap the corners of %1").arg(zone ? zone.name : qsTr("the new part"))
                     color: Theme.text
                     font.family: Theme.fontFamily
                     font.pixelSize: 13
@@ -517,7 +531,7 @@ Item {
                 Chip { icon: "back"; text: qsTr("Undo"); enabled: root.drawPts.length > 0; opacity: enabled ? 1 : 0.4; onClicked: root.undoPoint() }
                 Chip { visible: root.drawEdited; text: qsTr("Reset"); onClicked: root.drawReset() }
                 Chip { icon: "close"; text: qsTr("Cancel"); onClicked: root.drawCancelled() }
-                Chip { icon: "check"; text: qsTr("Done"); checked: true; enabled: root.drawPts.length >= 3; opacity: enabled ? 1 : 0.4; onClicked: root.finish() }
+                Chip { icon: "check"; text: qsTr("Done"); checked: true; enabled: root.drawPts.length >= root.drawMin; opacity: enabled ? 1 : 0.4; onClicked: root.finish() }
             }
         }
     }
